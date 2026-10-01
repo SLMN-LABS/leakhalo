@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Welcome to LeakHalo</title>
+  <link rel="icon" type="image/png" href="../assets/icons/icon16.png">
+  <link rel="stylesheet" href="welcome.css">
+  <script src="land.js" defer></script>
+  <script src="welcome.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to your connection</a>
+
+  <!-- Points at Chrome's own toolbar, just above this page's top-right corner. -->
+  <aside id="pinCard" class="pin-coach" aria-labelledby="pinTitle" data-pinned="false">
+    <div class="coach-arrow" aria-hidden="true"><span class="arrow-label" id="arrowLabel">Extensions are up here</span><svg viewBox="0 0 40 64"><path d="M20 62V6M6 20 20 4l14 16"/></svg></div>
+    <div class="coach-card">
+      <p class="coach-eyebrow" id="pinEyebrow">One last step</p>
+      <h2 id="pinTitle">Pin LeakHalo to your toolbar</h2>
+      <ol class="pin-steps">
+        <li><span class="step-dot" aria-hidden="true">1</span><span>Click <span class="kbd-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 16v-4h1a3 3 0 1 0 0-6h-1V4a2 2 0 0 0-2-2h-4v1a3 3 0 1 1-6 0V2H4a2 2 0 0 0-2 2v4h1a3 3 0 1 1 0 6H2v4a2 2 0 0 0 2 2h4v1a3 3 0 1 0 6 0v-1h4a2 2 0 0 0 2-2z"/></svg></span> <strong>Extensions</strong> in Chrome’s toolbar, up here</span></li>
+        <li><span class="step-dot" aria-hidden="true">2</span><span>Click the <span class="kbd-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg></span> <strong>pin</strong> next to LeakHalo</span></li>
+        <li id="pinFinalStep"><span class="step-dot" aria-hidden="true">3</span><span>Your flag stays in the toolbar. Click it any time.</span></li>
+      </ol>
+
+      <!-- Miniature of Chrome's Extensions menu on Windows. -->
+      <div class="chrome-menu" aria-hidden="true">
+        <div class="chrome-menu-head"><span>Extensions</span><span class="x">✕</span></div>
+        <div class="chrome-menu-row">
+          <img src="../assets/brand/icon-only.png" width="20" height="20" alt="">
+          <span>LeakHalo – IP &amp; WebRTC Leak Protection</span>
+          <span class="chrome-pin"><svg viewBox="0 0 24 24"><path d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg></span>
+          <span class="dots">⋮</span>
+        </div>
+        <div class="chrome-menu-foot"><svg viewBox="0 0 24 24"><path d="M12.2 2h-.4a2 2 0 0 0-2 2v.2a2 2 0 0 1-1 1.7l-.4.3a2 2 0 0 1-2 0l-.2-.1a2 2 0 0 0-2.7.7l-.2.4a2 2 0 0 0 .7 2.7l.2.1a2 2 0 0 1 1 1.7v.5a2 2 0 0 1-1 1.8l-.2.1a2 2 0 0 0-.7 2.7l.2.4a2 2 0 0 0 2.7.7l.2-.1a2 2 0 0 1 2 0l.4.3a2 2 0 0 1 1 1.7v.2a2 2 0 0 0 2 2h.4a2 2 0 0 0 2-2v-.2a2 2 0 0 1 1-1.7l.4-.3a2 2 0 0 1 2 0l.2.1a2 2 0 0 0 2.7-.7l.2-.4a2 2 0 0 0-.7-2.7l-.2-.1a2 2 0 0 1-1-1.7v-.5a2 2 0 0 1 1-1.8l.2-.1a2 2 0 0 0 .7-2.7l-.2-.4a2 2 0 0 0-2.7-.7l-.2.1a2 2 0 0 1-2 0l-.4-.3a2 2 0 0 1-1-1.7V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>Manage extensions</div>
+      </div>
+
+      <p id="pinStatus" class="pin-status" role="status" aria-live="polite"><span class="status-dot" aria-hidden="true"></span><span id="pinStatusText">Waiting for you to pin LeakHalo</span></p>
+    </div>
+  </aside>
+
+  <header class="topbar">
+    <div class="brand"><img src="../assets/brand/icon-only.png" width="36" height="36" alt=""><span>LeakHalo</span></div>
+  </header>
+
+  <main id="main">
+    <section class="hero" aria-labelledby="heroTitle">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="live-dot" aria-hidden="true"></span>LeakHalo is running</p>
+        <h1 id="heroTitle">This is how<br><span class="grad">the web sees you.</span></h1>
+
+        <section id="connectionCard" class="connection" aria-labelledby="connectionTitle" aria-live="polite" aria-atomic="true" data-state="loading">
+          <h2 id="connectionTitle" class="visually-hidden">Your connection right now</h2>
+          <div class="where">
+            <img id="connectionFlag" class="flag" src="../assets/icons/icon48.png" width="72" height="54" alt="">
+            <div class="where-text">
+              <strong id="connectionCountry">Checking your connection…</strong>
+              <span id="connectionCity">Waiting for the first network check</span>
+            </div>
+          </div>
+          <div class="ip-row">
+            <span class="ip-label">Public IP</span>
+            <span id="connectionV4" class="ip mono skeleton">Checking…</span>
+            <button id="copyIp" class="copy" type="button" aria-label="Copy IP address"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span id="copyLabel">Copy</span></button>
+          </div>
+          <dl class="facts">
+            <div><dt>Network</dt><dd id="connectionNetwork" class="skeleton">Checking…</dd></div>
+            <div><dt>IPv6</dt><dd><span id="connectionV6" class="mono skeleton">Checking…</span><span id="connectionV6Location" class="sub"></span></dd></div>
+            <div><dt>WebRTC</dt><dd><span class="policy-label"><span class="policy-dot" aria-hidden="true"></span><span id="connectionPolicy">Checking WebRTC policy…</span></span></dd></div>
+          </dl>
+          <p class="fineprint">Approximate IP location. LeakHalo is not a VPN; it shows what your connection reveals.</p>
+        </section>
+
+        <div class="actions">
+          <button id="openPopup" class="primary" type="button">Open LeakHalo<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button>
+          <a class="ghost" href="../options/options.html" data-options>Settings</a>
+          <p id="popupHelp" class="help" role="status" aria-live="polite"></p>
+        </div>
+      </div>
+
+      <div class="globe-wrap" aria-hidden="true">
+        <canvas id="globe" width="640" height="640"></canvas>
+        <div id="globeLabel" class="globe-label" hidden><span class="pulse"></span><span id="globeLabelText">You appear here</span></div>
+      </div>
+    </section>
+
+    <section class="setup" aria-labelledby="setupTitle">
+      <div class="setup-head">
+        <h2 id="setupTitle">Set the way LeakHalo watches</h2>
+        <p id="saveStatus" class="save-status" role="status" aria-live="polite">Loading preferences…</p>
+      </div>
+      <div class="setup-grid">
+        <label class="toggle-card" for="setNotifications">
+          <span class="toggle-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg></span>
+          <span class="toggle-copy"><strong>Change alerts</strong><span id="notificationsDescription">A desktop notification when your public IP changes.</span></span>
+          <span class="switch"><input id="setNotifications" type="checkbox" role="switch" aria-describedby="notificationsDescription" checked disabled><span class="track" aria-hidden="true"></span></span>
+        </label>
+        <label class="toggle-card" for="setFastDetection">
+          <span class="toggle-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg></span>
+          <span class="toggle-copy"><strong>Instant detection</strong><span id="fastDescription">Notices changes in seconds via LeakHalo’s server, which sees your IP and keeps no logs.</span></span>
+          <span class="switch"><input id="setFastDetection" type="checkbox" role="switch" aria-describedby="fastDescription" checked disabled><span class="track" aria-hidden="true"></span></span>
+        </label>
+        <label class="toggle-card" for="setAntiLeakShield">
+          <span class="toggle-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg></span>
+          <span class="toggle-copy"><strong>WebRTC Armor</strong><span id="shieldDescription">Applies Chrome’s WebRTC IP-handling policy. Other extensions may override it.</span></span>
+          <span class="switch"><input id="setAntiLeakShield" type="checkbox" role="switch" aria-describedby="shieldDescription" checked disabled><span class="track" aria-hidden="true"></span></span>
+        </label>
+      </div>
+      <p class="privacy-line">Your IP is sent only to the IP and location providers and LeakHalo’s no-log server listed in the <a href="../privacy.html">privacy policy</a>. No account, analytics or ads. With WebRTC Armor off, the popup’s WebRTC check may also contact Google’s STUN server.</p>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span class="publisher"><img src="../assets/brand/salman-labs.png" width="22" height="22" alt="">By <strong>SLMN LABS</strong> · v<span id="appVersion">—</span></span>
+    <nav aria-label="Footer"><a href="../options/options.html" data-options>Settings</a><a href="../privacy.html">Privacy policy</a></nav>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>LeakHalo</title>
+  <link rel="icon" type="image/png" href="../assets/icons/icon16.png">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+  <header class="header">
+    <div class="brand">
+      <img class="brand-icon" src="../assets/brand/icon-only.png" width="24" height="24" alt="">
+      <span class="brand-name">LeakHalo</span>
+
+      <span id="splitBadge" class="split-pill" style="display: none;" title="Split Route: IPv4 and IPv6 traffic are routing through different countries/networks.">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="6" y1="3" x2="6" y2="15"></line>
+          <circle cx="18" cy="6" r="3"></circle>
+          <circle cx="6" cy="18" r="3"></circle>
+          <path d="M18 9a9 9 0 0 1-9 9"></path>
+        </svg>
+        <span>Split Route</span>
+      </span>
+    </div>
+    <div class="header-actions">
+      <button id="refreshBtn" class="ghost-btn" title="Refresh network status">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="23 4 23 10 17 10"></polyline>
+          <polyline points="1 20 1 14 7 14"></polyline>
+          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+        </svg>
+      </button>
+      <button id="shieldToggleBtn" class="ghost-btn shield-btn" title="Anti-Leak Armor (WebRTC Protection) • Click to toggle">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+        </svg>
+      </button>
+      <button id="settingsToggleBtn" class="ghost-btn" title="Extension Settings">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision">
+          <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
+          <circle cx="12" cy="12" r="3"></circle>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="status-subbar">
+    <div style="display: flex; align-items: center; gap: 6px;">
+      <span class="pulse-dot"></span>
+      <span class="subbar-label">Live Monitor</span>
+    </div>
+    <span id="lastUpdatedTime" class="time-stamp">Checking…</span>
+  </div>
+
+  <div id="loader" class="shimmer-container">
+    <div class="shimmer-hero"></div>
+    <div class="shimmer-row"></div>
+  </div>
+
+  <main id="content" class="main-stack" style="display: none;">
+
+    <section class="card hero-card" id="v4Card">
+
+      <img id="v4Watermark" class="flag-watermark" src="" alt="">
+
+      <div class="hero-top">
+        <div class="country-avatar-wrap">
+          <img id="v4FlagImg" class="squircle-flag" src="/assets/icons/icon48.png" alt="Flag">
+        </div>
+        <div class="country-meta">
+          <div class="country-headline">
+            <span id="v4Country" class="country-name">-</span>
+            <span class="protocol-tag">IPv4</span>
+            <span id="v4TypeTag" class="type-tag" style="display: none;">-</span>
+          </div>
+          <div class="location-wrapper">
+            <a id="v4MapBtn" class="location-link" target="_blank" rel="noopener noreferrer" title="Open approximate location in OpenStreetMap" aria-label="Open approximate location in OpenStreetMap">
+              <svg class="location-pin" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                <circle cx="12" cy="10" r="3"></circle>
+              </svg>
+              <span id="v4CityRegion" class="city-text">-</span>
+            </a>
+          </div>
+        </div>
+      </div>
+
+      <div id="v4IpRow" class="ip-hero-row" title="Click to copy IP address" tabindex="0" role="button" aria-label="Copy IPv4 Address">
+        <span id="v4Ip" class="ip-mono">0.0.0.0</span>
+        <div class="copy-action">
+          <span id="v4CopyStatus" class="copy-feedback">Copy</span>
+          <svg class="copy-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+          </svg>
+        </div>
+      </div>
+
+      <div class="info-list">
+        <div class="info-row" id="v4IspRow">
+          <span class="info-label">ISP</span>
+          <span id="v4Isp" class="info-val">-</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="route-alert" id="routeAlert" style="display: none;" role="status">
+      <div class="route-alert-head">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+          <line x1="12" y1="9" x2="12" y2="13"></line>
+          <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+        <span>Sites see different IPs</span>
+      </div>
+      <div class="route-alert-rows" id="routeAlertRows"></div>
+      <div class="route-alert-note">A proxy, VPN rule or your internet provider's routing sends some sites through a different public IP. The IP above is what Cloudflare-served sites see.</div>
+    </section>
+
+    <div id="v6Section">
+
+      <section class="card hero-card" id="v6ActiveCard" style="display: none;">
+        <img id="v6Watermark" class="flag-watermark" src="" alt="">
+        <div class="hero-top">
+          <div class="country-avatar-wrap">
+            <img id="v6FlagImg" class="squircle-flag" src="/assets/icons/icon48.png" alt="Flag">
+          </div>
+          <div class="country-meta">
+            <div class="country-headline">
+              <span id="v6Country" class="country-name">-</span>
+              <span class="protocol-tag ipv6">IPv6</span>
+              <span id="v6TypeTag" class="type-tag" style="display: none;">-</span>
+            </div>
+            <div class="location-wrapper">
+              <a id="v6MapBtn" class="location-link" target="_blank" rel="noopener noreferrer" title="Open approximate location in OpenStreetMap" aria-label="Open approximate location in OpenStreetMap">
+                <svg class="location-pin" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                  <circle cx="12" cy="10" r="3"></circle>
+                </svg>
+                <span id="v6CityRegion" class="city-text">-</span>
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <div id="v6IpRow" class="ip-hero-row" title="Click to copy IP address" tabindex="0" role="button" aria-label="Copy IPv6 Address">
+          <span id="v6Ip" class="ip-mono font-compact">0:0:0:0:0</span>
+          <div class="copy-action">
+            <span id="v6CopyStatus" class="copy-feedback">Copy</span>
+            <svg class="copy-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          </div>
+        </div>
+
+        <div class="info-list">
+          <div class="info-row" id="v6IspRow">
+            <span class="info-label">ISP</span>
+            <span id="v6Isp" class="info-val">-</span>
+          </div>
+        </div>
+      </section>
+
+      <div id="v6InactivePill" class="compact-pill" title="No IPv6 address detected on this network">
+        <div class="pill-left">
+          <span class="protocol-tag muted">IPv6</span>
+          <span class="pill-msg">Not detected on current network</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="security-bar" id="securityBar">
+      <div class="sec-item" id="shieldStatusPill" title="Anti-Leak Armor (WebRTC Protection) • Click to toggle">
+        <span class="sec-dot green" id="shieldDot"></span>
+        <span class="sec-label">Armor:</span>
+        <span class="sec-status clean" id="shieldStatusText">ON</span>
+      </div>
+      <div class="sec-divider"></div>
+      <div class="sec-item" id="webrtcItem" title="WebRTC Leak Protection Status">
+        <span class="sec-dot checking" id="webrtcDot"></span>
+        <span class="sec-label">WebRTC:</span>
+        <span class="sec-status" id="webrtcStatus">Probing...</span>
+      </div>
+    </div>
+
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

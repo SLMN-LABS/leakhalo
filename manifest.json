@@ -1,0 +1,43 @@
+{
+  "manifest_version": 3,
+  "name": "LeakHalo – IP & WebRTC Leak Protection",
+  "short_name": "LeakHalo",
+  "version": "1.0.0",
+  "description": "Check your public IP, detect WebRTC leaks, and verify your online privacy at a glance.",
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "privacy"
+  ],
+  "host_permissions": [
+    "https://api.ipify.org/*",
+    "https://api6.ipify.org/*",
+    "https://cloudflare.com/*",
+    "https://*.icanhazip.com/*",
+    "https://checkip.amazonaws.com/*",
+    "https://ipwho.is/*",
+    "https://get.geojs.io/*",
+    "https://ipinfo.io/*"
+  ],
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "assets/icons/icon16.png",
+      "48": "assets/icons/icon48.png",
+      "128": "assets/icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "assets/icons/icon16.png",
+    "48": "assets/icons/icon48.png",
+    "128": "assets/icons/icon128.png"
+  }
+}

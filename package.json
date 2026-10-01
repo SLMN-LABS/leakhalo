@@ -1,0 +1,13 @@
+{
+  "name": "leakhalo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LeakHalo Chrome extension: public IP, location and WebRTC protection at a glance.",
+  "scripts": {
+    "test": "node test/run_tests.js && node test/runtime_smoke.js",
+    "test:e2e": "node test/e2e_browser.cjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}
