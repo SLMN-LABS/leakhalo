@@ -8,7 +8,7 @@
 [![Tests](https://img.shields.io/github/actions/workflow/status/SLMN-LABS/leakhalo/ci.yml?branch=main&style=for-the-badge&labelColor=0b1324&label=tests)](https://github.com/SLMN-LABS/leakhalo/actions/workflows/ci.yml)
 [![Manifest V3](https://img.shields.io/badge/manifest-v3-38bdf8?style=for-the-badge&labelColor=0b1324&logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3)
 [![No tracking](https://img.shields.io/badge/tracking-none-19e6c1?style=for-the-badge&labelColor=0b1324)](https://slmn-labs.github.io/leakhalo/privacy.html)
-[![License: MIT](https://img.shields.io/github/license/SLMN-LABS/leakhalo?style=for-the-badge&color=1d6fe0&labelColor=0b1324)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-1d6fe0?style=for-the-badge&labelColor=0b1324)](LICENSE)
 
 ### Your public IP, its country and every leak, one glance away in Chrome’s toolbar.
 
@@ -80,19 +80,16 @@ Built and tested for Google Chrome on desktop. Other Chromium browsers that supp
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"fontFamily": "Inter, Segoe UI, sans-serif", "primaryColor": "#0b1324", "primaryTextColor": "#eef4fc", "primaryBorderColor": "#38bdf8", "lineColor": "#19e6c1", "clusterBkg": "#071328", "clusterBorder": "#1d6fe0", "titleColor": "#9db0c6", "edgeLabelBackground": "#0b1324", "textColor": "#9db0c6"}}}%%
-flowchart LR
-    subgraph P["Public IP services · HTTPS"]
-        direction TB
-        CF["<b>IPv4 · edge view</b><br/>Cloudflare → icanhazip"]
-        IP["<b>IPv4 · independent view</b><br/>ipify → Amazon checkip"]
-        V6["<b>IPv6</b><br/>ipify → icanhazip"]
-        GEO["<b>Location</b><br/>ipwho.is → GeoJS → ipinfo"]
-    end
+flowchart TB
+    CF["<b>IPv4 · edge view</b><br/>Cloudflare → icanhazip"]
+    IP["<b>IPv4 · independent view</b><br/>ipify → Amazon checkip"]
+    V6["<b>IPv6</b><br/>ipify → icanhazip"]
+    GEO["<b>Location</b><br/>ipwho.is → GeoJS → ipinfo"]
     SRV["<b>⚡ LeakHalo server</b><br/>optional · keeps no logs"]
-    SW(["<b>LeakHalo</b><br/>service worker"])
-    UI["🏳️ Toolbar flag<br/>🪟 Popup<br/>🔔 Change alerts"]
-    P -- "answers" --> SW
-    SRV -. "IP changed? (WebSocket)" .-> SW
+    SW(["<b>LeakHalo service worker</b><br/>compares both IPv4 views · decides what you see"])
+    UI["🏳️ Toolbar flag · 🪟 Popup · 🔔 Change alerts"]
+    CF & IP & V6 & GEO -- HTTPS --> SW
+    SRV -. "IP changed?" .-> SW
     SW --> UI
 ```
 
