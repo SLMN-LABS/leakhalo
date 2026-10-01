@@ -79,16 +79,20 @@ Built and tested for Google Chrome on desktop. Other Chromium browsers that supp
 ## How it works
 
 ```mermaid
+%%{init: {"theme": "base", "themeVariables": {"fontFamily": "Inter, Segoe UI, sans-serif", "primaryColor": "#0b1324", "primaryTextColor": "#eef4fc", "primaryBorderColor": "#38bdf8", "lineColor": "#19e6c1", "clusterBkg": "#071328", "clusterBorder": "#1d6fe0", "titleColor": "#9db0c6", "edgeLabelBackground": "#0b1324", "textColor": "#9db0c6"}}}%%
 flowchart LR
-    subgraph Chrome["Your Chrome"]
-        SW["LeakHalo<br/>service worker"]
-        UI["Toolbar flag · popup · alerts"]
+    subgraph P["Public IP services · HTTPS"]
+        direction TB
+        CF["<b>IPv4 · edge view</b><br/>Cloudflare → icanhazip"]
+        IP["<b>IPv4 · independent view</b><br/>ipify → Amazon checkip"]
+        V6["<b>IPv6</b><br/>ipify → icanhazip"]
+        GEO["<b>Location</b><br/>ipwho.is → GeoJS → ipinfo"]
     end
-    SW -- "IPv4 · edge view" --> CF["Cloudflare trace<br/><i>fallback: icanhazip</i>"]
-    SW -- "IPv4 · independent view" --> IP["ipify<br/><i>fallback: Amazon checkip</i>"]
-    SW -- "IPv6" --> V6["ipify v6<br/><i>fallback: icanhazip v6</i>"]
-    SW -- "location of the IP" --> GEO["ipwho.is<br/><i>fallbacks: GeoJS, ipinfo</i>"]
-    SW <-. "WebSocket · ping every 10 s<br/>(instant detection, optional)" .-> SRV["LeakHalo server<br/><i>reports the IP it sees, keeps no logs</i>"]
+    SRV["<b>⚡ LeakHalo server</b><br/>optional · keeps no logs"]
+    SW(["<b>LeakHalo</b><br/>service worker"])
+    UI["🏳️ Toolbar flag<br/>🪟 Popup<br/>🔔 Change alerts"]
+    P -- "answers" --> SW
+    SRV -. "IP changed? (WebSocket)" .-> SW
     SW --> UI
 ```
 
@@ -167,11 +171,11 @@ Found a bug or have an idea? [Open an issue](https://github.com/SLMN-LABS/leakha
 
 ## License
 
-Source code and documentation © 2026 SLMN LABS, released under the [MIT License](LICENSE). Flag artwork and other third-party assets are credited in [ASSET_ATTRIBUTION.md](ASSET_ATTRIBUTION.md).
+Source code and documentation © 2026 SLMN LABS, released under the [MIT License](LICENSE). The license applies to the extension source code and documentation; bundled image assets are excluded and carry their own licenses, listed in [ASSET_ATTRIBUTION.md](ASSET_ATTRIBUTION.md).
 
 <div align="center">
 <br>
-<img src="assets/brand/salman-labs.png" width="44" alt="SLMN LABS">
+<img src="assets/brand/wordmark.png" width="132" alt="LeakHalo">
 <br>
 <sub>Made by <b>SLMN LABS</b> · <a href="mailto:slmn.labs.official@gmail.com">slmn.labs.official@gmail.com</a></sub>
 </div>
