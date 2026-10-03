@@ -1,10 +1,10 @@
 <div align="center">
 
-<a href="https://github.com/SLMN-LABS/leakhalo/releases/latest"><img src="docs/media/banner.webp" alt="LeakHalo: know your IP, catch the leaks. A Chrome toolbar with a country flag and the LeakHalo popup showing the public IPv4 and IPv6 address." width="100%"></a>
+<a href="https://chromewebstore.google.com/detail/foondggjfgofibchcifainhcacedopcb"><img src="docs/media/banner.webp" alt="LeakHalo: know your IP, catch the leaks. A Chrome toolbar with a country flag and the LeakHalo popup showing the public IPv4 and IPv6 address." width="100%"></a>
 
 <br>
 
-[![Release](https://img.shields.io/github/v/release/SLMN-LABS/leakhalo?style=for-the-badge&color=19e6c1&labelColor=0b1324&label=release)](https://github.com/SLMN-LABS/leakhalo/releases/latest)
+[![Chrome Web Store](https://img.shields.io/chrome-web-store/v/foondggjfgofibchcifainhcacedopcb?style=for-the-badge&color=19e6c1&labelColor=0b1324&label=chrome%20web%20store&logo=googlechrome&logoColor=white)](https://chromewebstore.google.com/detail/foondggjfgofibchcifainhcacedopcb)
 [![Tests](https://img.shields.io/github/actions/workflow/status/SLMN-LABS/leakhalo/ci.yml?branch=main&style=for-the-badge&labelColor=0b1324&label=tests)](https://github.com/SLMN-LABS/leakhalo/actions/workflows/ci.yml)
 [![Manifest V3](https://img.shields.io/badge/manifest-v3-38bdf8?style=for-the-badge&labelColor=0b1324&logo=googlechrome&logoColor=white)](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3)
 [![No tracking](https://img.shields.io/badge/tracking-none-19e6c1?style=for-the-badge&labelColor=0b1324)](https://slmn-labs.github.io/leakhalo/privacy.html)
@@ -12,7 +12,9 @@
 
 ### Your public IP, its country and every leak, one glance away in Chrome’s toolbar.
 
-[**Download 1.0.0**](https://github.com/SLMN-LABS/leakhalo/releases/latest) · [Features](#features) · [How it works](#how-it-works) · [Privacy](#privacy) · [FAQ](#faq) · [Development](#development)
+<a href="https://chromewebstore.google.com/detail/foondggjfgofibchcifainhcacedopcb"><img src="https://img.shields.io/badge/Add_to_Chrome-it's_free-19e6c1?style=for-the-badge&logo=googlechrome&logoColor=white&labelColor=1d6fe0" alt="Add to Chrome, it's free" height="44"></a>
+
+[Features](#features) · [How it works](#how-it-works) · [Privacy](#privacy) · [FAQ](#faq) · [Development](#development)
 
 </div>
 
@@ -66,9 +68,11 @@ WebRTC can expose your real IP even behind a VPN. One switch applies Chrome’s 
 
 ## Install
 
-**Chrome Web Store:** coming soon.
+### [➜ Get LeakHalo on the Chrome Web Store](https://chromewebstore.google.com/detail/foondggjfgofibchcifainhcacedopcb)
 
-**Today, from the release:**
+One click on **Add to Chrome**, and the welcome page opens. Updates arrive automatically.
+
+**Or install manually** from the GitHub release:
 
 1. Download **[LeakHalo-1.0.0.zip](https://github.com/SLMN-LABS/leakhalo/releases/download/v1.0.0/LeakHalo-1.0.0.zip)** and unzip it.
 2. Open `chrome://extensions` and turn on **Developer mode** (top right).
