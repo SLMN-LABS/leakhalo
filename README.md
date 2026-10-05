@@ -74,7 +74,7 @@ One click on **Add to Chrome**, and the welcome page opens. Updates arrive autom
 
 **Or install manually** from the GitHub release:
 
-1. Download **[LeakHalo-1.0.0.zip](https://github.com/SLMN-LABS/leakhalo/releases/download/v1.0.0/LeakHalo-1.0.0.zip)** and unzip it.
+1. Download **[LeakHalo-1.0.1.zip](https://github.com/SLMN-LABS/leakhalo/releases/download/v1.0.1/LeakHalo-1.0.1.zip)** and unzip it.
 2. Open `chrome://extensions` and turn on **Developer mode** (top right).
 3. Click **Load unpacked** and choose the unzipped folder. The welcome page opens.
 
