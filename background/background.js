@@ -991,12 +991,38 @@ async function applyPrivacyShield() {
  * a network change is noticed within seconds even when the popup is closed; the regular providers
  * then verify it immediately. If the server is unreachable, everything works as before on the
  * 30-second alarm. Users can turn it off in Settings (enableFastDetection).
+ *
+ * Chrome records every failed WebSocket handshake as an error of the extension (shown on
+ * chrome://extensions), while failed fetches stay silent. So the channel never dials while the
+ * device is offline, and before each attempt it checks with a plain request that the server is
+ * reachable. Offline, or where the server is blocked, it waits quietly and retries with backoff.
  */
 const FAST_CHANNEL_URLS = ['wss://35-232-61-175.sslip.io/v1/ws', 'ws://35.232.61.175/v1/ws'];
 const FAST_PING_MS = 10_000;
 const FAST_PONG_TIMEOUT_MS = 5_000;
 const FAST_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
-const fastChannel = { ws: null, enabled: false, urlIndex: 0, attempt: 0, pingTimer: null, pongTimer: null, retryTimer: null };
+const FAST_REACH_TIMEOUT_MS = 5_000;
+const fastChannel = { ws: null, enabled: false, connecting: false, urlIndex: 0, attempt: 0, pingTimer: null, pongTimer: null, retryTimer: null };
+
+const deviceOnline = () => typeof navigator === 'undefined' || navigator.onLine !== false;
+
+// The server's health check on the same host and scheme as the socket (wss → https, ws → http).
+async function fastServerReachable(wsUrl) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FAST_REACH_TIMEOUT_MS);
+  try {
+    const url = new URL(wsUrl);
+    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+    url.pathname = '/healthz';
+    url.search = '';
+    await fetch(url.href, { mode: 'no-cors', cache: 'no-store', signal: controller.signal });
+    return true;
+  } catch (e) {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function fastDetectionEnabled(settings) {
   // Off with its own switch, and also when automatic checks are off (it only triggers checks).
@@ -1008,7 +1034,7 @@ async function syncFastChannel() {
   const { appSettings } = await chrome.storage.local.get('appSettings');
   fastChannel.enabled = fastDetectionEnabled(appSettings);
   if (!fastChannel.enabled) { stopFastChannel(); return; }
-  if (!fastChannel.ws && !fastChannel.retryTimer) connectFastChannel();
+  if (!fastChannel.ws && !fastChannel.retryTimer && !fastChannel.connecting) connectFastChannel();
 }
 
 function stopFastChannel() {
@@ -1022,13 +1048,29 @@ function stopFastChannel() {
 }
 
 async function connectFastChannel() {
-  if (!fastChannel.enabled || fastChannel.ws) return;
-  // Test-only override so the end-to-end suite can point the channel at a local stand-in.
-  const { devFastChannelUrls } = await chrome.storage.local.get('devFastChannelUrls');
-  const urls = Array.isArray(devFastChannelUrls) && devFastChannelUrls.length ? devFastChannelUrls : FAST_CHANNEL_URLS;
-  if (!fastChannel.enabled || fastChannel.ws) return;
+  if (!fastChannel.enabled || fastChannel.ws || fastChannel.connecting) return;
+  // Offline: wait for the 'online' event (or the next alarm) instead of dialing.
+  if (!deviceOnline()) return;
+  fastChannel.connecting = true;
+  let url, reachable;
+  try {
+    // Test-only override so the end-to-end suite can point the channel at a local stand-in.
+    const { devFastChannelUrls } = await chrome.storage.local.get('devFastChannelUrls');
+    const urls = Array.isArray(devFastChannelUrls) && devFastChannelUrls.length ? devFastChannelUrls : FAST_CHANNEL_URLS;
+    url = urls[fastChannel.urlIndex % urls.length];
+    reachable = await fastServerReachable(url);
+  } finally {
+    fastChannel.connecting = false;
+  }
+  if (!fastChannel.enabled || fastChannel.ws || fastChannel.retryTimer) return;
+  if (!reachable) {
+    // Unreachable through this address: try the next one after the backoff, unless the device
+    // went offline meanwhile (then the 'online' event resumes the channel).
+    if (deviceOnline()) { fastChannel.urlIndex++; scheduleFastReconnect(); }
+    return;
+  }
   let ws;
-  try { ws = new WebSocket(urls[fastChannel.urlIndex % urls.length]); } catch (e) { fastChannel.urlIndex++; scheduleFastReconnect(); return; }
+  try { ws = new WebSocket(url); } catch (e) { fastChannel.urlIndex++; scheduleFastReconnect(); return; }
   fastChannel.ws = ws;
   let opened = false;
   ws.onopen = () => {
@@ -1164,6 +1206,15 @@ syncFastChannel().catch(() => {});
 chrome.storage.onChanged?.addListener((changes, area) => {
   if (area === 'local' && (changes.appSettings || changes.devFastChannelUrls)) syncFastChannel().catch(() => {});
 });
+// Back online: reconnect right away instead of waiting out the backoff.
+if (typeof self !== 'undefined' && typeof self.addEventListener === 'function') {
+  self.addEventListener('online', () => {
+    fastChannel.attempt = 0;
+    clearTimeout(fastChannel.retryTimer);
+    fastChannel.retryTimer = null;
+    syncFastChannel().catch(() => {});
+  });
+}
 
 const webRtcPolicy = chrome.privacy?.network?.webRTCIPHandlingPolicy;
 if (webRtcPolicy?.onChange) {

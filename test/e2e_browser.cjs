@@ -59,6 +59,8 @@ function startServer() {
       // instead trigger Chrome's throttling of extension requests that keep getting server errors.)
       case 'api6.ipify.org': return net.v6 ? send(200, JSON.stringify({ ip: net.v6 }), 'application/json') : rq.socket.destroy();
       case 'ipv6.icanhazip.com': return net.v6 ? send(200, net.v6 + '\n') : rq.socket.destroy();
+      // LeakHalo server health check, used before each WebSocket attempt ('ipwatch' down = blocked).
+      case '35-232-61-175.sslip.io': return net.down.has('ipwatch') ? rq.socket.destroy() : send(200, 'ok');
       case 'ipwho.is': {
         const ip = decodeURIComponent(url.pathname.slice(1)), g = GEO[ip];
         return send(200, JSON.stringify(g ? { success: true, ip, ...g, timezone: { id: 'UTC' }, latitude: 1, longitude: 1 } : { success: false }), 'application/json');
@@ -608,7 +610,7 @@ async function launch({ mocked, port }) {
     await waitFor(() => net.sockets.size > 0, 15_000, 'reconnect');
   });
   await check('Fast detection: plain ws:// fallback works from the extension', async () => {
-    const plain = require('node:http').createServer();
+    const plain = require('node:http').createServer((rq, rs) => rs.end('ok'));
     attachWebSocket(plain);
     await new Promise(r => plain.listen(0, '127.0.0.1', r));
     const before = net.wsOrigins.length;
@@ -619,6 +621,42 @@ async function launch({ mocked, port }) {
     dropSockets();
     plain.close();
     await bg(() => { ensureAlarm(); });
+  });
+  await check('Offline or with the server blocked, the extension records no errors in Chrome', async () => {
+    // Chrome logs each failed WebSocket handshake as an extension error (the red "Errors" button
+    // on chrome://extensions). Read that list the way the Extensions page does.
+    const ext = await context.newPage();
+    try {
+      await ext.goto('chrome://extensions');
+      const dev = (method, arg) => ext.evaluate(([m, a]) => new Promise(r => chrome.developerPrivate[m](a, r)), [method, arg]);
+      await dev('updateProfileConfiguration', { inDeveloperMode: true });
+      await dev('updateExtensionConfiguration', { extensionId: id, errorCollection: true });
+      const extErrors = async () => ((await ext.evaluate(x => new Promise(r => chrome.developerPrivate.getExtensionInfo(x, r)), id)).runtimeErrors || []).map(e => e.message);
+      const settle = () => waitFor(() => net.sockets.size > 0, 45_000, 'fast channel to reconnect');
+      await settle();
+
+      net.down.add('ipwatch'); // server blocked, as for users in Iran without a VPN
+      dropSockets();
+      await sleep(12_000);
+      assert((await extErrors()).length === 0, `errors with the server blocked: ${JSON.stringify(await extErrors())}`);
+      net.down.delete('ipwatch');
+      await settle();
+
+      await context.setOffline(true);
+      dropSockets();
+      await sleep(4_000);
+      await probe();
+      await sleep(8_000);
+      assert((await storage(['isOffline'])).isOffline === true, 'offline state not stored');
+      assert((await extErrors()).length === 0, `errors while offline: ${JSON.stringify(await extErrors())}`);
+      await context.setOffline(false);
+      await settle();
+      await probe();
+      assert((await extErrors()).length === 0, `errors after reconnecting: ${JSON.stringify(await extErrors())}`);
+    } finally {
+      await context.setOffline(false);
+      await ext.close();
+    }
   });
   popup = await openPopup();
 

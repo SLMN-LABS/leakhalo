@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- Fixed: going offline, or using LeakHalo where its server is blocked, no longer fills the extension's error list on `chrome://extensions`. Instant detection now waits while the device is offline and checks that LeakHalo's server is reachable before connecting.
+
 ## 1.0.0 — first public release
 
 - Public IPv4 and IPv6 with country, city and network; country flag in the toolbar, with split flags when IPv4 and IPv6 leave from different countries.

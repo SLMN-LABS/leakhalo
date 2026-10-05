@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "LeakHalo – IP & WebRTC Leak Protection",
   "short_name": "LeakHalo",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Check your public IP, detect WebRTC leaks, and verify your online privacy at a glance.",
   "permissions": [
     "storage",
