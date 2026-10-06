@@ -95,12 +95,10 @@ async function runAllTests() {
     }
   });
 
-  test('Host permissions do NOT include <all_urls> and use HTTPS', () => {
-    assert(Array.isArray(manifest.host_permissions));
-    assert(!manifest.host_permissions.includes('<all_urls>'), 'host_permissions must not contain broad <all_urls>');
-    for (const hp of manifest.host_permissions) {
-      assert(hp.startsWith('https://'), `Host permission ${hp} must use secure HTTPS`);
-    }
+  test('No host permissions: every provider is reached with CORS (no install warning)', () => {
+    assert(!manifest.host_permissions, 'host_permissions must stay absent');
+    assert(!manifest.optional_host_permissions, 'optional_host_permissions must stay absent');
+    assert(!manifest.content_scripts, 'content scripts must stay absent');
   });
 
   test('Permissions do not include unused activeTab or tabs', () => {
@@ -108,8 +106,8 @@ async function runAllTests() {
     assert(!manifest.permissions.includes('activeTab'), 'unused activeTab should be removed');
   });
 
-  test('Manifest includes primary geo provider get.geojs.io', () => {
-    assert(manifest.host_permissions.includes('https://get.geojs.io/*'), 'manifest must include get.geojs.io');
+  test('Background still uses the geo provider get.geojs.io', () => {
+    assert(fs.readFileSync(path.join(ROOT, 'background/background.js'), 'utf8').includes('https://get.geojs.io/'), 'background must query get.geojs.io');
   });
 
   test('Popup does not load the retired WebRTC interceptor', () => {
@@ -154,11 +152,7 @@ async function runAllTests() {
   });
   test('Onboarding adds no permissions or web-accessible resources', () => {
     assert.deepStrictEqual(manifest.permissions, ['storage', 'alarms', 'notifications', 'privacy']);
-    assert.deepStrictEqual(manifest.host_permissions, [
-      'https://api.ipify.org/*', 'https://api6.ipify.org/*', 'https://cloudflare.com/*',
-      'https://*.icanhazip.com/*', 'https://checkip.amazonaws.com/*', 'https://ipwho.is/*',
-      'https://get.geojs.io/*', 'https://ipinfo.io/*'
-    ]);
+    assert(!manifest.host_permissions);
     assert(!manifest.web_accessible_resources);
   });
   test('Background opens the welcome page only from the first-install guard', () => {
@@ -515,6 +509,19 @@ kex=X25519
     assert.strictEqual(computeSplitRouting({ countryCode: 'DE' }, { countryCode: 'US' }), true);
     assert.strictEqual(computeSplitRouting({ countryCode: 'IR' }, null), false);
     assert.strictEqual(computeSplitRouting(null, { countryCode: 'FR' }), false);
+  });
+
+  test('Settings link to independent leak tests safely and offer the IPv6 alert switch', () => {
+    const options = fs.readFileSync(path.join(ROOT, 'options/options.html'), 'utf8');
+    for (const url of ['https://www.dnsleaktest.com/', 'https://coveryourtracks.eff.org/']) {
+      assert(options.includes(`href="${url}" target="_blank" rel="noopener noreferrer"`), `missing safe link to ${url}`);
+    }
+    assert(options.includes('id="setNotifyIPv6"') && fs.readFileSync(path.join(ROOT, 'options/options.js'), 'utf8').includes('notifyIPv6: setNotifyIPv6'));
+    assert(bgCode.includes("stored.appSettings?.notifyIPv6 !== false"), 'IPv6 alerts must honour the switch');
+  });
+
+  test('Toolbar: offline is the grey icon without badge text; provider errors show ERR', () => {
+    assert(/badgeText: probeError \? 'ERR' : ''/.test(bgCode), 'offline must not add badge text');
   });
 
   test('Badge generation returns correct 2-letter ISO, OFF, or ERR', () => {

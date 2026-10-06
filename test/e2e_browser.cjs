@@ -20,20 +20,23 @@ fs.mkdirSync(OUT, { recursive: true });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /* ---------------- provider stand-in ---------------- */
-const IR = '46.100.233.74', AZ = '31.171.101.166', DE = '203.0.113.44', NL = '203.0.113.60', US6 = '2001:db8::26', PSIP = '203.0.113.99', C_IP = '198.51.100.77';
+const IR = '46.100.233.74', AZ = '31.171.101.166', DE = '203.0.113.44', NL = '203.0.113.60', US6 = '2001:db8::26', US6B = '2001:db8::27', PSIP = '203.0.113.99', C_IP = '198.51.100.77';
 const GEO = {
   [IR]: { country_code: 'IR', country: 'Iran', city: 'Tehran', region: 'Tehran', connection: { isp: 'Telecommunication Company of Iran', asn: 58224 } },
   [AZ]: { country_code: 'AZ', country: 'Azerbaijan', city: 'Baku', region: 'Baku City', connection: { isp: 'Delta Telecom Ltd', asn: 29049 } },
   [DE]: { country_code: 'DE', country: 'Germany', city: 'Berlin', region: 'Berlin', connection: { isp: 'Example Network', asn: 64500 } },
   [NL]: { country_code: 'NL', country: 'Netherlands', city: 'Amsterdam', region: 'North Holland', connection: { isp: 'Example NL', asn: 64510 } },
   [US6]: { country_code: 'US', country: 'United States', city: 'San Francisco', region: 'California', connection: { isp: 'Example v6', asn: 64501 } },
+  [US6B]: { country_code: 'US', country: 'United States', city: 'San Francisco', region: 'California', connection: { isp: 'Example v6', asn: 64501 } },
   [PSIP]: { country_code: 'PS', country: 'Palestine', city: 'Ramallah', region: 'West Bank', connection: { isp: 'Example PS', asn: 64520 } },
   [C_IP]: { country_code: 'FR', country: 'France', city: 'Paris', region: 'Île-de-France', connection: { isp: 'Example FR', asn: 64530 } }
 };
+const TZ = { IR: 'Asia/Tehran', AZ: 'Asia/Baku', DE: 'Europe/Berlin', NL: 'Europe/Amsterdam', US: 'America/Los_Angeles', PS: 'Asia/Hebron', FR: 'Europe/Paris' };
 const net = {
   edge: IR, loc: 'IR', indep: IR, v6: null,
   serverIp: null,    // IP the LeakHalo server stand-in reports (null = same as edge)
   sockets: new Set(), wsOrigins: [],
+  blackhole: false,  // every connection dropped: no internet although Chrome reports one
   down: new Set(),   // hosts answering 503
   hang: new Set(),   // hosts that never answer
   log: []
@@ -47,9 +50,11 @@ function startServer() {
   const server = https.createServer({ key: fs.readFileSync(path.join(dir, 'key.pem')), cert: fs.readFileSync(path.join(dir, 'cert.pem')) }, (rq, rs) => {
     const host = (rq.headers.host || '').split(':')[0], url = new URL(rq.url, 'https://x');
     net.log.push({ t: Date.now(), host, path: url.pathname });
+    if (net.blackhole) return rq.socket.destroy();
     if (net.hang.has(host)) return; // never respond
     const send = (code, body, type = 'text/plain') => { rs.writeHead(code, { 'content-type': type, 'access-control-allow-origin': '*' }); rs.end(body); };
-    if (net.down.has(host)) return send(503, 'down');
+    // Like real error pages, the 503 carries no CORS header, so the extension cannot read it.
+    if (net.down.has(host)) { rs.writeHead(503, { 'content-type': 'text/html' }); return rs.end('down'); }
     switch (host) {
       case 'cloudflare.com': return send(200, `fl=1\nh=cloudflare.com\nip=${net.edge}\nts=0\nloc=${net.loc}\n`);
       case 'ipv4.icanhazip.com': return send(200, net.edge + '\n');
@@ -63,7 +68,7 @@ function startServer() {
       case '35-232-61-175.sslip.io': return net.down.has('ipwatch') ? rq.socket.destroy() : send(200, 'ok');
       case 'ipwho.is': {
         const ip = decodeURIComponent(url.pathname.slice(1)), g = GEO[ip];
-        return send(200, JSON.stringify(g ? { success: true, ip, ...g, timezone: { id: 'UTC' }, latitude: 1, longitude: 1 } : { success: false }), 'application/json');
+        return send(200, JSON.stringify(g ? { success: true, ip, ...g, timezone: { id: TZ[g?.country_code] || 'UTC' }, latitude: 1, longitude: 1 } : { success: false }), 'application/json');
       }
       default: return send(503, 'unused');
     }
@@ -77,7 +82,7 @@ function attachWebSocket(server) {
   const crypto = require('node:crypto');
   const frame = text => { const b = Buffer.from(text); const head = b.length < 126 ? Buffer.from([0x81, b.length]) : Buffer.from([0x81, 126, b.length >> 8, b.length & 255]); return Buffer.concat([head, b]); };
   server.on('upgrade', (rq, socket) => {
-    if (!rq.url.startsWith('/v1/ws') || net.down.has('ipwatch')) { socket.destroy(); return; }
+    if (!rq.url.startsWith('/v1/ws') || net.down.has('ipwatch') || net.blackhole) { socket.destroy(); return; }
     const accept = crypto.createHash('sha1').update(rq.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
     net.sockets.add(socket); net.wsOrigins.push(rq.headers.origin);
@@ -132,7 +137,7 @@ async function launch({ mocked, port }) {
   // Live runs go through the host's proxy when one is configured (Chromium ignores *_proxy env vars).
   const proxy = process.env.HTTPS_PROXY || process.env.https_proxy;
   if (!mocked && proxy) args.push(`--proxy-server=${proxy}`);
-  const context = await chromium.launchPersistentContext(userDir, { executablePath: BROWSER, headless: true, args, viewport: { width: 420, height: 760 } });
+  const context = await chromium.launchPersistentContext(userDir, { executablePath: BROWSER, headless: true, args, viewport: { width: 420, height: 760 }, timezoneId: 'Asia/Tehran' });
   const errors = [], welcomeErrors = [], welcomeRequests = [], welcomePages = new Set();
   const watchPage = page => {
     const record = message => {
@@ -657,6 +662,75 @@ async function launch({ mocked, port }) {
       await context.setOffline(false);
       await ext.close();
     }
+  });
+  await check('Connection lost while Chrome still reports online: "Offline" within seconds, not ERR or the old countries', async () => {
+    // Windows keeps reporting a connection with VPN/virtual adapters or Wi-Fi without internet.
+    popup = await openPopup();
+    await waitFor(() => net.sockets.size > 0, 45_000, 'fast channel');
+    await waitFor(async () => (await popupState(popup)).country && (await popupState(popup)).country !== 'Offline', 10_000, 'online popup');
+    try {
+      net.blackhole = true;
+      const t0 = Date.now();
+      dropSockets();
+      const a = await waitFor(async () => { const x = await action(); return /Disconnected/.test(x.title) && x; }, 20_000, 'toolbar to show Disconnected');
+      console.log(`      offline shown ${((Date.now() - t0) / 1000).toFixed(1)} s after the connection dropped`);
+      assert(a.badge === '', `offline must be the grey icon alone, badge ${JSON.stringify(a.badge)}`);
+      const p = await waitFor(async () => { const x = await popupState(popup); return x.country === 'Offline' && x; }, 8_000, 'popup to show Offline');
+      assert(p.v6 === null && !p.split, `popup still shows old routes: ${JSON.stringify(p)}`);
+    } finally {
+      net.blackhole = false;
+    }
+    const t1 = Date.now();
+    await waitFor(async () => !/Disconnected/.test((await action()).title), 15_000, 'toolbar to recover');
+    console.log(`      back online ${((Date.now() - t1) / 1000).toFixed(1)} s after the connection returned`);
+    await popup.close(); // the next check must work without the popup's own 3-second polling
+  });
+  await check('Chrome reports offline: toolbar shows it at once and recovers within seconds (popup closed)', async () => {
+    try {
+      // Going offline also breaks open connections (Playwright's emulation alone keeps them).
+      await context.setOffline(true);
+      const t0 = Date.now();
+      dropSockets();
+      await waitFor(async () => /Disconnected/.test((await action()).title), 5_000, 'toolbar to show Disconnected');
+      console.log(`      offline shown ${((Date.now() - t0) / 1000).toFixed(1)} s after Chrome went offline`);
+    } finally {
+      await context.setOffline(false);
+    }
+    const t1 = Date.now();
+    await waitFor(async () => !/Disconnected/.test((await action()).title), 15_000, 'toolbar to recover');
+    console.log(`      back online ${((Date.now() - t1) / 1000).toFixed(1)} s after Chrome came back online`);
+  });
+  await check('Time zone hint: matches for an Iranian IP, warns when the IP is in another time zone', async () => {
+    popup = await openPopup();
+    const tz = () => popup.evaluate(() => ({ shown: getComputedStyle(document.getElementById('v4TzRow')).display !== 'none', text: document.getElementById('v4Tz').textContent, cls: document.getElementById('v4Tz').className }));
+    net.edge = IR; net.loc = 'IR'; net.indep = IR; net.v6 = null;
+    await waitFor(async () => (await popupState(popup)).country === 'Iran', 15_000, 'Iran');
+    const a = await waitFor(async () => { const x = await tz(); return x.shown && /tz-match/.test(x.cls) && x; }, 8_000, 'matching time zone');
+    assert(a.text === 'Asia/Tehran', JSON.stringify(a));
+    net.edge = DE; net.loc = 'DE'; net.indep = DE;
+    await waitFor(async () => (await popupState(popup)).country === 'Germany', 15_000, 'Germany');
+    const b = await waitFor(async () => { const x = await tz(); return /tz-mismatch/.test(x.cls) && x; }, 8_000, 'time zone warning');
+    assert(b.text === 'Europe/Berlin · your clock Asia/Tehran', JSON.stringify(b));
+    await popup.close();
+  });
+  await check('IPv6 change alerts follow their own switch', async () => {
+    const v6Notes = async () => (await notes()).filter(n => /IPv6/.test(n.title)).length;
+    net.v6 = US6;
+    await probe();
+    await waitFor(async () => (await storage(['latestV6Info'])).latestV6Info?.ip === US6, 15_000, 'IPv6 baseline');
+    await settings({ notifyIPv6: false });
+    const before = await v6Notes();
+    net.v6 = US6B;
+    await probe();
+    await waitFor(async () => (await storage(['latestV6Info'])).latestV6Info?.ip === US6B, 15_000, 'IPv6 change');
+    await sleep(5_000); // past the notification throttle
+    assert(await v6Notes() === before, 'IPv6 alert sent although switched off');
+    await settings({ notifyIPv6: true });
+    net.v6 = US6;
+    await probe();
+    await waitFor(async () => await v6Notes() === before + 1, 10_000, 'IPv6 alert when switched on');
+    net.v6 = null;
+    await probe();
   });
   popup = await openPopup();
 

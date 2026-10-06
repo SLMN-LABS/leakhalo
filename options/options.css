@@ -153,6 +153,20 @@ a { color: inherit; }
 .setting-title { color: var(--ink); font-size: 14px; font-weight: 760; }
 .setting-description { max-width: 590px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
 .select-row { cursor: default; }
+.setting-row.leak-tests { grid-template-columns: minmax(0, 1fr); gap: 12px; cursor: default; }
+.leak-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.leak-links a {
+  padding: 8px 12px;
+  border: 1px solid #cfe3de;
+  border-radius: 9px;
+  color: var(--navy);
+  font-size: 12.5px;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.leak-links a::after { content: " ↗"; color: var(--muted); }
+.leak-links a:hover, .leak-links a:focus-visible { border-color: #16a085; background: #f2fbf8; }
 .select-row.is-disabled { opacity: .52; }
 select {
   width: min(286px, 100%);
@@ -214,6 +228,7 @@ select:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid 
 .preview-note-status { gap: 8px; font-size: 10px; }
 .status-example { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
 .status-example.connected::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #16a085; }
+.status-example.offline::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #94a3b8; }
 .map-row { margin-top: 0; padding-top: 15px; }
 .popup-preview { display: flex; flex-direction: column; gap: 6px; width: min(310px, 100%); margin-top: 11px; padding: 10px 12px; border: 1px solid #27364b; border-radius: 11px; background: #111827; color: #e7edf5; box-shadow: 0 5px 12px #142e3b13; }
 .popup-preview-label { color: #9aaec2; font-size: 9px; font-weight: 700; letter-spacing: .08em; }

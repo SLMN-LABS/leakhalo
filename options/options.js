@@ -3,6 +3,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const saveToast = document.getElementById('saveToast');
   const setNotifications = document.getElementById('setNotifications');
+  const setNotifyIPv6 = document.getElementById('setNotifyIPv6');
   const setAutoRefresh = document.getElementById('setAutoRefresh');
   const setFastDetection = document.getElementById('setFastDetection');
   const setRouteWarning = document.getElementById('setRouteWarning');
@@ -23,6 +24,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const fields = {
     enableNotifications: setNotifications,
+    notifyIPv6: setNotifyIPv6,
     enableAutoRefresh: setAutoRefresh,
     enableFastDetection: setFastDetection,
     warnRouteDivergence: setRouteWarning,

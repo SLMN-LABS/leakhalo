@@ -92,6 +92,17 @@
               <span class="switch-track" aria-hidden="true"></span>
             </span>
           </label>
+
+          <div class="setting-row leak-tests">
+            <span class="setting-copy">
+              <span class="setting-title">More leak tests</span>
+              <span class="setting-description">Independent checks for leaks LeakHalo does not cover. They open in a new tab; LeakHalo sends them nothing.</span>
+            </span>
+            <span class="leak-links">
+              <a href="https://www.dnsleaktest.com/" target="_blank" rel="noopener noreferrer">DNS leak test</a>
+              <a href="https://coveryourtracks.eff.org/" target="_blank" rel="noopener noreferrer">Browser fingerprint</a>
+            </span>
+          </div>
         </section>
 
         <section id="notifications" class="section-card" aria-labelledby="monitoringTitle">
@@ -138,6 +149,17 @@
 
           <label class="setting-row">
             <span class="setting-copy">
+              <span class="setting-title">Include IPv6 changes</span>
+              <span class="setting-description">Some networks rotate temporary IPv6 addresses often. Turn off to be alerted about IPv4 changes only.</span>
+            </span>
+            <span class="switch">
+              <input type="checkbox" id="setNotifyIPv6" checked>
+              <span class="switch-track" aria-hidden="true"></span>
+            </span>
+          </label>
+
+          <label class="setting-row">
+            <span class="setting-copy">
               <span class="setting-title">Warn when sites see different IPs</span>
               <span class="setting-description">Off by default: the popup always shows the IP and country most sites see. Turn on to also show a warning when some sites reach you through another public IP, for example through a split-tunnel VPN, a proxy rule or your provider's routing.</span>
             </span>
@@ -171,9 +193,9 @@
                 <span class="preview-note">Example · US country badge</span>
               </label>
               <label class="radio-card">
-                <span class="radio-card-heading"><input type="radio" name="badgeMode" value="off"><span class="radio-content"><strong>LeakHalo icon</strong><small>Use the product icon. Offline and error badges still appear.</small></span></span>
+                <span class="radio-card-heading"><input type="radio" name="badgeMode" value="off"><span class="radio-content"><strong>LeakHalo icon</strong><small>Use the product icon. Offline turns it grey; an error adds a badge.</small></span></span>
                 <span class="toolbar-preview" aria-hidden="true"><span class="preview-dots"><i></i><i></i><i></i></span><span class="preview-address"></span><span class="preview-extension"><img src="../assets/icons/icon48.png" alt=""></span></span>
-                <span class="preview-note preview-note-status"><span class="status-example connected">Connected</span><span class="status-example"><span class="preview-status">OFF</span> Offline</span><span class="status-example"><span class="preview-status error">ERR</span> Error</span></span>
+                <span class="preview-note preview-note-status"><span class="status-example connected">Connected</span><span class="status-example offline">Grey · Offline</span><span class="status-example"><span class="preview-status error">ERR</span> Error</span></span>
               </label>
             </div>
           </fieldset>

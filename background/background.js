@@ -11,6 +11,12 @@ let GEO_LOOKUP_TIMEOUT_MS = 15_000;
 let PROBE_WATCHDOG_MS = 30_000;
 let TOOLBAR_WAIT_MS = 5_000;
 let probeGeneration = 0;
+// While a check reports "offline", retry soon so the return of the connection shows within seconds
+// (the alarm alone would take up to 30 s), then every 15 s for as long as the worker runs.
+// Requests fail locally while offline, so this is cheap.
+const OFFLINE_RETRY_MS = [3_000, 5_000, 10_000, 15_000];
+const offlineRetry = { timer: null, step: 0 };
+const deviceOnline = () => typeof navigator === 'undefined' || navigator.onLine !== false;
 function withTimeout(promise, ms, onTimeout) {
   let timer;
   return Promise.race([
@@ -151,7 +157,8 @@ async function planToolbar(v4Info, v6Info, isOffline, probeError) {
     const icon = await renderedActionIcon(renderDisconnectedIcon).catch(() => null);
     return {
       icon: icon || DEFAULT_ACTION_ICON,
-      badgeText: probeError ? 'ERR' : 'OFF',
+      // Offline is the grey icon alone; only a provider error adds a badge.
+      badgeText: probeError ? 'ERR' : '',
       badgeColor: probeError ? '#f59e0b' : '#64748b',
       title: probeError ? 'LeakHalo: Unable to verify network' : 'LeakHalo: Disconnected / No Internet Connection'
     };
@@ -813,6 +820,40 @@ function makePendingGeoInfo(ip, countryCode = '') {
   };
 }
 
+// Plain reachability check, independent of CORS headers and provider cooldowns: any HTTP answer,
+// even an error page, proves a working connection.
+async function internetReachable() {
+  const ping = (url) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3_000);
+    return fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal }).finally(() => clearTimeout(timer));
+  };
+  try {
+    await Promise.any([ping('https://cloudflare.com/cdn-cgi/trace'), ping('https://api.ipify.org/')]);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// repeat: keep retrying every 15 s after the quick steps. Without it (the browser itself reports
+// offline, so the 'online' event will follow) only the quick steps run, as a safety net in case
+// that event never reaches this worker, e.g. when Chrome starts before the network is up.
+function scheduleOfflineRetry(repeat = true) {
+  if (offlineRetry.timer || (!repeat && offlineRetry.step >= OFFLINE_RETRY_MS.length)) return;
+  const delay = OFFLINE_RETRY_MS[Math.min(offlineRetry.step++, OFFLINE_RETRY_MS.length - 1)];
+  offlineRetry.timer = setTimeout(() => {
+    offlineRetry.timer = null;
+    fetchAllBackgroundLocations(true).catch(() => {});
+  }, delay);
+}
+
+function resetOfflineRetry() {
+  clearTimeout(offlineRetry.timer);
+  offlineRetry.timer = null;
+  offlineRetry.step = 0;
+}
+
 async function fetchAllBackgroundLocations(forceRefresh = false, minimumIntervalMs = PROBE_INTERVAL_MS) {
   if (activeProbePromise) {
     if (!forceRefresh) return activeProbePromise;
@@ -848,6 +889,15 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
 
       await commit({ lastProbeAt: Date.now() });
 
+      // The browser knows it has no network: show that at once, without requests that can only fail.
+      // Mostly the 'online' event (or the alarm, if the worker slept) ends this state.
+      if (!deviceOnline()) {
+        await commit({ isOffline: true, probeError: false });
+        if (current()) scheduleOfflineRetry(false);
+        await withTimeout(current() && updateToolbarDisplay(cachedV4, cachedV6, true, false).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
+        return { v4Info: cachedV4, v6Info: cachedV6, isOffline: true, probeError: false };
+      }
+
       const [observation, fastV6] = await Promise.all([
         probePublicIPv4(),
         getFastPublicIPv6()
@@ -857,12 +907,16 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
       const v4Held = route.held;
 
       if (!fastV4 && !fastV6 && !v4Held) {
-        // Endpoint failure alone cannot prove that the browser is offline.
-        const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+        // Every provider failed. If not even a plain request gets an answer, there is no working
+        // connection, although the browser may still report one (virtual network adapters, Wi-Fi
+        // without internet). Otherwise the providers are the problem ("ERR").
+        const isOffline = !deviceOnline() || !(await internetReachable());
         await commit({ isOffline, probeError: !isOffline, routeState: route.state });
+        if (isOffline && current()) scheduleOfflineRetry();
         await withTimeout(current() && updateToolbarDisplay(cachedV4, cachedV6, isOffline, !isOffline).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
         return { v4Info: cachedV4, v6Info: cachedV6, isOffline, probeError: !isOffline };
       }
+      resetOfflineRetry();
 
       const v4Changed = !!fastV4 && cachedV4?.ip !== fastV4.ip;
       const v6Changed = !!fastV6 && cachedV6?.ip !== fastV6;
@@ -880,7 +934,7 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
         if (route.notify && v4Changed && current() && await sendIPChangeNotification('IPv4', route.notify.from, pendingV4)) {
           route.state.announcedIp = route.notify.to;
         }
-        if (v6Changed && cachedV6?.ip && current()) sendIPChangeNotification('IPv6', cachedV6.ip, pendingV6);
+        if (v6Changed && cachedV6?.ip && stored.appSettings?.notifyIPv6 !== false && current()) sendIPChangeNotification('IPv6', cachedV6.ip, pendingV6);
         await withTimeout(current() && updateToolbarDisplay(pendingV4, pendingV6, false).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
       }
 
@@ -1002,9 +1056,8 @@ const FAST_PING_MS = 10_000;
 const FAST_PONG_TIMEOUT_MS = 5_000;
 const FAST_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
 const FAST_REACH_TIMEOUT_MS = 5_000;
-const fastChannel = { ws: null, enabled: false, connecting: false, urlIndex: 0, attempt: 0, pingTimer: null, pongTimer: null, retryTimer: null };
-
-const deviceOnline = () => typeof navigator === 'undefined' || navigator.onLine !== false;
+const FAST_DROP_PROBE_GAP_MS = 10_000;
+const fastChannel = { ws: null, enabled: false, connecting: false, urlIndex: 0, attempt: 0, pingTimer: null, pongTimer: null, retryTimer: null, dropProbeAt: 0 };
 
 // The server's health check on the same host and scheme as the socket (wss → https, ws → http).
 async function fastServerReachable(wsUrl) {
@@ -1073,9 +1126,15 @@ async function connectFastChannel() {
   try { ws = new WebSocket(url); } catch (e) { fastChannel.urlIndex++; scheduleFastReconnect(); return; }
   fastChannel.ws = ws;
   let opened = false;
+  let openedAt = 0;
   ws.onopen = () => {
     opened = true;
+    openedAt = Date.now();
     fastChannel.attempt = 0;
+    // The server is reachable again: if the last check found no connection, re-check now.
+    chrome.storage.local.get(['isOffline', 'probeError']).then((res) => {
+      if (res.isOffline === true || res.probeError === true) fetchAllBackgroundLocations(true).catch(() => {});
+    }).catch(() => {});
     let id = 0;
     clearTimeout(fastChannel.pingTimer);
     // Pings keep the socket (and with it this service worker) alive and detect silent drops.
@@ -1098,7 +1157,17 @@ async function connectFastChannel() {
   };
   ws.onerror = () => {}; // onclose follows
   ws.onclose = () => {
+    // Closed by the network rather than by us: the connection changed or dropped, so check now.
+    // A connection that had been up for a while always counts; short-lived ones at most once per
+    // 10 s, so a server that keeps dropping fresh connections cannot loop.
+    // Offline, the check makes no requests, so it always runs.
+    const dropped = opened && fastChannel.ws === ws && (!deviceOnline() ||
+      Date.now() - openedAt >= FAST_DROP_PROBE_GAP_MS || Date.now() - fastChannel.dropProbeAt >= FAST_DROP_PROBE_GAP_MS);
     if (fastChannel.ws === ws) fastChannel.ws = null;
+    if (dropped) {
+      fastChannel.dropProbeAt = Date.now();
+      fetchAllBackgroundLocations(true).catch(() => {});
+    }
     clearTimeout(fastChannel.pingTimer);
     clearTimeout(fastChannel.pongTimer);
     if (!opened) fastChannel.urlIndex++; // try the next address (wss first, then plain ws)
@@ -1133,7 +1202,8 @@ ensureAlarm();
 async function autoRefresh() {
   syncFastChannel().catch(() => {}); // revive the channel if the worker was restarted
   const { appSettings } = await chrome.storage.local.get('appSettings');
-  if (appSettings?.enableAutoRefresh !== false) return fetchAllBackgroundLocations(false);
+  // Slightly below the alarm period, so a probe that ran just before does not skip a whole tick.
+  if (appSettings?.enableAutoRefresh !== false) return fetchAllBackgroundLocations(false, PROBE_INTERVAL_MS - 5_000);
 }
 
 chrome.runtime.onInstalled.addListener((details) => {
@@ -1206,13 +1276,19 @@ syncFastChannel().catch(() => {});
 chrome.storage.onChanged?.addListener((changes, area) => {
   if (area === 'local' && (changes.appSettings || changes.devFastChannelUrls)) syncFastChannel().catch(() => {});
 });
-// Back online: reconnect right away instead of waiting out the backoff.
+// Network events: back online, reconnect and check right away; offline, show it right away.
 if (typeof self !== 'undefined' && typeof self.addEventListener === 'function') {
   self.addEventListener('online', () => {
     fastChannel.attempt = 0;
     clearTimeout(fastChannel.retryTimer);
     fastChannel.retryTimer = null;
     syncFastChannel().catch(() => {});
+    resetOfflineRetry();
+    fetchAllBackgroundLocations(true).catch(() => {});
+  });
+  // Lost the network: show it in the toolbar at once (the check makes no requests while offline).
+  self.addEventListener('offline', () => {
+    fetchAllBackgroundLocations(true).catch(() => {});
   });
 }
 

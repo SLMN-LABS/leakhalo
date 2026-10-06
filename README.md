@@ -63,6 +63,8 @@ WebRTC can expose your real IP even behind a VPN. One switch applies Chrome’s 
 |---|---|
 | 🎯 **Stable answer** | IPv4 is checked from two independent vantage points at once, so the displayed IP and country stay steady even when your network routes some sites differently. An optional warning tells you when that happens. |
 | 🧭 **Honest location** | IP geolocation is approximate, and LeakHalo says so. If one location service fails, the next one answers. |
+| 📴 **Offline at a glance** | Lose the connection and the toolbar icon turns grey within about a second; it comes back within seconds when you are online again. |
+| 🕐 **Time-zone hint** | Sites can compare your clock with your IP’s location. The popup warns when your browser’s time zone does not match the IP’s, a common way to spot a VPN. |
 | 🪶 **Light** | No frameworks, no remote code. A background check about every 30 seconds, every 3 seconds while the popup is open. |
 | 🎨 **Yours** | Toolbar shows a flag, a flag with a country code, or the plain LeakHalo icon. Map links are optional. |
 
@@ -74,7 +76,7 @@ One click on **Add to Chrome**, and the welcome page opens. Updates arrive autom
 
 **Or install manually** from the GitHub release:
 
-1. Download **[LeakHalo-1.0.1.zip](https://github.com/SLMN-LABS/leakhalo/releases/download/v1.0.1/LeakHalo-1.0.1.zip)** and unzip it.
+1. Download **[LeakHalo-1.0.2.zip](https://github.com/SLMN-LABS/leakhalo/releases/download/v1.0.2/LeakHalo-1.0.2.zip)** and unzip it.
 2. Open `chrome://extensions` and turn on **Developer mode** (top right).
 3. Click **Load unpacked** and choose the unzipped folder. The welcome page opens.
 
@@ -113,7 +115,8 @@ LeakHalo keeps your results **only in your browser**. To learn your public IP it
 | `privacy` | Apply Chrome’s WebRTC IP-handling policy and the network prediction setting |
 | `notifications` | The optional alert when your IP changes |
 | `alarms` | Background checks about every 30 seconds |
-| IP and location services | Discover your public IP and its approximate location |
+
+**No access to the sites you visit.** LeakHalo has no host permissions: it reaches the IP and location services with standard cross-origin requests, so Chrome shows no “Read and change your data” warning.
 
 ## FAQ
 

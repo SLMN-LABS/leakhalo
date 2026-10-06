@@ -20,6 +20,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const v4Isp = document.getElementById('v4Isp');
   const v4MapBtn = document.getElementById('v4MapBtn');
   const v4IspRow = document.getElementById('v4IspRow');
+  const v4TzRow = document.getElementById('v4TzRow');
+  const v4Tz = document.getElementById('v4Tz');
 
   const v6ActiveCard = document.getElementById('v6ActiveCard');
   const v6InactivePill = document.getElementById('v6InactivePill');
@@ -274,6 +276,39 @@ document.addEventListener('DOMContentLoaded', () => {
     watermark.src = rect;
   }
 
+  // UTC offset in minutes of an IANA time zone right now, or null if unknown.
+  function zoneOffsetMinutes(timeZone) {
+    try {
+      const name = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' })
+        .formatToParts(new Date()).find(part => part.type === 'timeZoneName')?.value || '';
+      if (name === 'GMT') return 0;
+      const m = name.match(/^GMT([+-])(\d{2}):(\d{2})$/);
+      return m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Websites can compare the browser's clock with the IP's location; a different time zone can
+  // reveal a VPN or proxy. Compared by current UTC offset, so neighbouring zones count as a match.
+  function renderTimeZone(ipZone) {
+    const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    const ipOffset = typeof ipZone === 'string' && ipZone.includes('/') ? zoneOffsetMinutes(ipZone) : null;
+    const browserOffset = browserZone ? zoneOffsetMinutes(browserZone) : null;
+    if (ipOffset === null || browserOffset === null) {
+      v4TzRow.style.display = 'none';
+      return;
+    }
+    const match = ipOffset === browserOffset;
+    v4Tz.innerText = match ? ipZone : `${ipZone} · your clock ${browserZone}`;
+    v4Tz.title = match
+      ? 'Your browser clock matches the time zone of this IP.'
+      : 'Your browser clock is in a different time zone than this IP. Websites can compare the two, which can reveal a VPN or proxy.';
+    v4Tz.classList.toggle('tz-match', match);
+    v4Tz.classList.toggle('tz-mismatch', !match);
+    v4TzRow.style.display = 'flex';
+  }
+
   function renderIPv4(data, isOffline = false, probeError = false, hasResult = false) {
     if (isOffline || !data || !data.ip) {
       v4Country.innerText = isOffline ? 'Offline' : (probeError || hasResult ? 'IPv4 unavailable' : 'Checking...');
@@ -283,6 +318,7 @@ document.addEventListener('DOMContentLoaded', () => {
       v4CityRegion.innerText = isOffline ? 'Network connection unavailable' : (probeError ? 'Unable to verify network' : (hasResult ? 'IPv6 connection detected' : 'Waiting for network check'));
       v4CityRegion.title = v4CityRegion.innerText;
       v4IspRow.style.display = 'none';
+      v4TzRow.style.display = 'none';
       v4MapBtn.removeAttribute('href');
       v4MapBtn.classList.add('disabled');
       if (v4TypeTag) {
@@ -341,6 +377,7 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       v4IspRow.style.display = 'none';
     }
+    renderTimeZone(data.timezone);
   }
 
   function renderIPv6(data, isOffline = false) {
@@ -637,7 +674,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // skips the redraw (a finished lookup that found nothing differs from the "Locating..."
   // placeholder only by its country name and pending flag).
   function computeFingerprint(res) {
-    const v4 = res.latestV4Info ? `${normalizeVal(res.latestV4Info.ip)}|${normalizeVal(res.latestV4Info.country)}|${res.latestV4Info.pending === true}|${normalizeVal(res.latestV4Info.countryCode).toUpperCase()}|${normalizeVal(res.latestV4Info.city)}|${normalizeVal(res.latestV4Info.region)}|${normalizeVal(res.latestV4Info.isp)}|${normalizeVal(res.latestV4Info.asn)}|${normalizeVal(res.latestV4Info.connectionType)}|${normalizeVal(res.latestV4Info.lat)}|${normalizeVal(res.latestV4Info.lon)}` : 'none';
+    const v4 = res.latestV4Info ? `${normalizeVal(res.latestV4Info.ip)}|${normalizeVal(res.latestV4Info.country)}|${res.latestV4Info.pending === true}|${normalizeVal(res.latestV4Info.countryCode).toUpperCase()}|${normalizeVal(res.latestV4Info.city)}|${normalizeVal(res.latestV4Info.region)}|${normalizeVal(res.latestV4Info.isp)}|${normalizeVal(res.latestV4Info.asn)}|${normalizeVal(res.latestV4Info.connectionType)}|${normalizeVal(res.latestV4Info.lat)}|${normalizeVal(res.latestV4Info.lon)}|${normalizeVal(res.latestV4Info.timezone)}` : 'none';
     const v6 = res.latestV6Info ? `${normalizeVal(res.latestV6Info.ip)}|${normalizeVal(res.latestV6Info.country)}|${res.latestV6Info.pending === true}|${normalizeVal(res.latestV6Info.countryCode).toUpperCase()}|${normalizeVal(res.latestV6Info.city)}|${normalizeVal(res.latestV6Info.region)}|${normalizeVal(res.latestV6Info.isp)}|${normalizeVal(res.latestV6Info.asn)}|${normalizeVal(res.latestV6Info.connectionType)}|${normalizeVal(res.latestV6Info.lat)}|${normalizeVal(res.latestV6Info.lon)}` : 'none';
     const settings = res.appSettings ? `${res.appSettings.enableAntiLeakShield !== false}_${res.appSettings.antiLeakPolicy || ''}_${res.appSettings.showMap !== false}_${res.appSettings.badgeMode || ''}_${res.appSettings.enableWebRtcScan !== false}_${res.appSettings.warnRouteDivergence === true}` : 'defaults';
     const d = res.routeDivergence;

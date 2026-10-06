@@ -560,6 +560,9 @@ body {
   line-height: 1.35;
 }
 
+.tz-val.tz-match::after { content: " ✓"; color: #34d399; }
+.tz-val.tz-mismatch { color: #fbbf24; }
+
 .route-alert {
   background: rgba(245, 158, 11, 0.08);
   border: 1px solid rgba(245, 158, 11, 0.32);
