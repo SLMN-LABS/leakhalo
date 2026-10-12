@@ -174,7 +174,7 @@ async function planToolbar(v4Info, v6Info, isOffline, probeError) {
     ? divergence.alts.map(alt => normalizeCountryCode(alt.geo?.countryCode)).find(code => code && code !== v4Code) || ''
     : '';
   const primaryCode = v4Code || v6Code;
-  const primaryName = v4Info?.country || v6Info?.country || 'Connected';
+  const primaryName = primaryCode ? (v4Code ? v4Info.country : v6Info.country) : '';
   const isV4V6Split = !!(v4Code && v6Code && v4Code !== v6Code);
 
   const lines = [];
@@ -189,7 +189,7 @@ async function planToolbar(v4Info, v6Info, isOffline, probeError) {
   if (isV4V6Split) {
     lines.push('⚠️ Split Route Detected!', `IPv4: ${v4Info.country} (${v4Code}) | IPv6: ${v6Info.country} (${v6Code})`);
   }
-  lines.push(primaryCode ? `Location: ${primaryName} (${primaryCode})` : `LeakHalo: ${primaryName}`);
+  lines.push(primaryCode ? `Location: ${primaryName} (${primaryCode})` : `LeakHalo: location unknown · ${v4Info?.ip || v6Info?.ip}`);
   const title = lines.join('\n');
   const warning = !!divergence || isV4V6Split;
 
@@ -217,9 +217,6 @@ async function planToolbar(v4Info, v6Info, isOffline, probeError) {
     // Same-country or unknown-country divergence still needs a visible marker.
     badgeText = '!';
     badgeColor = '#f59e0b';
-  } else if (!primaryCode) {
-    badgeText = 'ON';
-    badgeColor = '#10b981';
   }
   return { icon: icon || DEFAULT_ACTION_ICON, badgeText, badgeColor, title };
 }
@@ -246,18 +243,39 @@ async function updateToolbarDisplay(v4Info, v6Info, isOffline = false, probeErro
 
 // Returns true when the change counts as announced (shown, or notifications are switched off) and
 // false when it was throttled or failed, so the caller can retry it on a later probe.
-async function sendIPChangeNotification(type, oldIp, newGeo) {
+// Resolves true only when Chrome actually created the notification.
+function createNotification(id, options) {
+  return new Promise((resolve) => {
+    try {
+      chrome.notifications.create(id, options, () => resolve(!chrome.runtime.lastError));
+    } catch (e) {
+      resolve(false);
+    }
+  });
+}
+
+// One alert at a time per address family, so the throttle check and its timestamp cannot
+// interleave between two checks.
+const notifyChains = {};
+function sendIPChangeNotification(type, oldIp, newGeo) {
+  const run = (notifyChains[type] || Promise.resolve()).catch(() => false).then(() => deliverIPChangeNotification(type, oldIp, newGeo));
+  notifyChains[type] = run;
+  return run;
+}
+
+async function deliverIPChangeNotification(type, oldIp, newGeo) {
   try {
     const now = Date.now();
-    const stored = await chrome.storage.local.get(['lastNotifTime', 'appSettings']);
+    // Throttled per address family, so an IPv4 and an IPv6 change in the same check both arrive.
+    const throttleKey = `lastNotifTime${type}`;
+    const stored = await chrome.storage.local.get([throttleKey, 'appSettings']);
     const enableNotifs = stored.appSettings ? stored.appSettings.enableNotifications !== false : true;
     if (!enableNotifs) return true;
-    const lastNotif = stored.lastNotifTime || 0;
+    const lastNotif = stored[throttleKey] || 0;
     if (now - lastNotif < 4000) return false;
-    await chrome.storage.local.set({ lastNotifTime: now });
 
-    const notifId = `ip_change_${now}`;
-    const flagEmoji = newGeo.countryCode ? ` (${newGeo.countryCode})` : '';
+    const notifId = `ip_change_${type}_${now}`;
+    const flagEmoji = normalizeCountryCode(newGeo.countryCode) ? ` (${normalizeCountryCode(newGeo.countryCode)})` : '';
     const knownCountry = normalizeCountryCode(newGeo.countryCode) ? ` in ${newGeo.country}` : '';
     const message = oldIp
       ? `Changed from ${oldIp} to ${newGeo.ip}${knownCountry}`
@@ -267,14 +285,15 @@ async function sendIPChangeNotification(type, oldIp, newGeo) {
       ? chrome.runtime.getURL(`assets/flags/flag-${newGeo.countryCode.toLowerCase()}.png`)
       : chrome.runtime.getURL('assets/icons/icon48.png');
 
-    chrome.notifications.create(notifId, {
+    const delivered = await createNotification(notifId, {
       type: 'basic',
       iconUrl: iconUrl,
       title: `🌍 ${type} IP Changed${flagEmoji}`,
       message: message,
       priority: 2
-    }, () => {});
-    return true;
+    });
+    if (delivered) await chrome.storage.local.set({ [throttleKey]: now });
+    return delivered;
   } catch (e) {
     return false;
   }
@@ -289,16 +308,16 @@ async function sendRouteDivergenceNotification(divergence, primaryInfo) {
     if (stored.appSettings?.warnRouteDivergence !== true) return; // warning is opt-in
     if (now - (stored.lastRouteNotifTime || 0) < 4000) return;
     if (stored.appSettings && stored.appSettings.enableNotifications === false) return;
-    await chrome.storage.local.set({ lastRouteNotifTime: now });
     const where = (ip, info) => normalizeCountryCode(info?.countryCode) ? `${ip} (${info.country})` : ip;
     const alts = divergence.alts.map(alt => `${alt.source}: ${where(alt.ip, alt.geo)}`).join('\n');
-    chrome.notifications.create(`route_divergence_${now}`, {
+    const delivered = await createNotification(`route_divergence_${now}`, {
       type: 'basic',
       iconUrl: chrome.runtime.getURL('assets/icons/icon48.png'),
       title: '⚠️ Sites see different IPs',
       message: `${divergence.primarySource}: ${where(divergence.primaryIp, primaryInfo)}\n${alts}\nA proxy, VPN rule or your internet provider's routing sends some sites through a different IP.`,
       priority: 2
-    }, () => {});
+    });
+    if (delivered) await chrome.storage.local.set({ lastRouteNotifTime: now });
   } catch (e) {}
 }
 
@@ -389,7 +408,7 @@ async function probePublicIPv4() {
     if (ipMatch && isValidIPv4(ipMatch[1].trim())) {
       return {
         ip: ipMatch[1].trim(),
-        countryCode: locMatch && locMatch[1] ? locMatch[1].trim().toUpperCase() : '',
+        countryCode: locMatch && locMatch[1] ? normalizeCountryCode(locMatch[1]) : '',
         source: 'Cloudflare'
       };
     }
@@ -414,6 +433,9 @@ const ROUTE_PAIR_TTL_MS = 2 * 60_000;   // "consecutive" probes must also be clo
 let ROUTE_MIN_PERSIST_MS = 15_000;
 const FALLBACK_CONFIRMATIONS = 2;        // independent-only answers needed to replace an edge IP
 const GROUP_MISSES_AS_KNOWN = 2;         // a group silent this long no longer vouches for an old IP
+// After the edge group has been silent this long, earlier alternate-route evidence no longer holds
+// the shown IP: a new independent answer is then accepted after FALLBACK_CONFIRMATIONS probes.
+let EDGE_SILENT_RELEASE_MS = 3 * 60_000;
 
 // Pure decision step for one IPv4 probe (no I/O). Inputs:
 //   observation  { edge, independent } answers ({ ip, countryCode, source }) or null
@@ -445,6 +467,7 @@ function evaluateIPv4Route(observation, cachedV4, state, divergence, now = Date.
     lastPairAt: now,
     edgeMisses: edge ? 0 : (state?.edgeMisses || 0) + 1,
     indepMisses: independent ? 0 : (state?.indepMisses || 0) + 1,
+    edgeSilentSince: edge ? null : (state?.edgeSilentSince || now),
     fallback: null, // strictly consecutive: only the independent-only branch below keeps it
     lastV4: ref ? { ip: ref.ip, vantage: ref.vantage || 'edge' } : null,
     // Independent IPs seen disagreeing with the edge for the IP currently shown (confirmed or not).
@@ -461,8 +484,9 @@ function evaluateIPv4Route(observation, cachedV4, state, divergence, now = Date.
     primary = { ...edge, vantage: 'edge' };
     st.fallback = null;
   } else if (independent) {
-    const knownAlternate = (!!div && div.alts.some(alt => alt.ip === independent.ip)) ||
-      st.altSeen.list.some(seen => seen.ip === independent.ip);
+    const edgeLongSilent = now - st.edgeSilentSince >= EDGE_SILENT_RELEASE_MS;
+    const knownAlternate = !edgeLongSilent && ((!!div && div.alts.some(alt => alt.ip === independent.ip)) ||
+      st.altSeen.list.some(seen => seen.ip === independent.ip));
     if (independent.ip === cachedIp) {
       primary = { ...independent, vantage: ref.vantage || 'independent' };
     } else if (cachedIp && knownAlternate) {
@@ -557,6 +581,11 @@ function evaluateIPv4Route(observation, cachedV4, state, divergence, now = Date.
   return { primary, held, state: st, divergence: div, confirmed, notify };
 }
 
+// Canonical (compressed, lower-case) IPv6, so two spellings of one address compare equal.
+function canonicalIPv6(ip) {
+  try { return new URL(`http://[${ip.trim()}]/`).hostname.slice(1, -1); } catch (e) { return ip.trim().toLowerCase(); }
+}
+
 async function getFastPublicIPv6() {
   const buster = `_t=${Date.now()}`;
   const endpoints = [
@@ -564,7 +593,7 @@ async function getFastPublicIPv6() {
       if (!res.ok) throw new Error();
       const data = await res.json();
       if (data && isValidIPv6(data.ip)) {
-        return data.ip.trim();
+        return canonicalIPv6(data.ip);
       }
       throw new Error();
     }),
@@ -572,7 +601,7 @@ async function getFastPublicIPv6() {
       if (!res.ok) throw new Error();
       const text = await res.text();
       if (isValidIPv6(text?.trim())) {
-        return text.trim();
+        return canonicalIPv6(text);
       }
       throw new Error();
     })
@@ -602,8 +631,13 @@ function getFullCountryName(code, fallbackName) {
   return code || cleanFallback || 'Unknown Country';
 }
 
+// Pseudo codes that are not countries: XX/ZZ unknown, T1 Tor, A1/A2 anonymous proxy and
+// satellite, O1 other, EU/AP regions. They must never show as a country or a flag.
+const PSEUDO_COUNTRY_CODES = new Set(['XX', 'ZZ', 'T1', 'A1', 'A2', 'O1', 'EU', 'AP']);
 function normalizeCountryCode(code) {
-  return typeof code === 'string' && /^[a-z]{2}$/i.test(code) ? code.toUpperCase() : '';
+  if (typeof code !== 'string' || !/^[a-z]{2}$/i.test(code.trim())) return '';
+  const upper = code.trim().toUpperCase();
+  return PSEUDO_COUNTRY_CODES.has(upper) ? '' : upper;
 }
 
 function normalizeCoordinate(value, limit) {
@@ -829,7 +863,7 @@ async function internetReachable() {
     return fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal }).finally(() => clearTimeout(timer));
   };
   try {
-    await Promise.any([ping('https://cloudflare.com/cdn-cgi/trace'), ping('https://api.ipify.org/')]);
+    await Promise.any([ping('https://cloudflare.com/cdn-cgi/trace'), ping('https://api.ipify.org/'), ping('https://35-232-61-175.sslip.io/healthz')]);
     return true;
   } catch (e) {
     return false;
@@ -839,13 +873,25 @@ async function internetReachable() {
 // repeat: keep retrying every 15 s after the quick steps. Without it (the browser itself reports
 // offline, so the 'online' event will follow) only the quick steps run, as a safety net in case
 // that event never reaches this worker, e.g. when Chrome starts before the network is up.
+// A lookup that produced no country, or only a country (every location service failed and the
+// country came from Cloudflare), is retried on GEO_RETRY_INTERVAL_MS.
+function geoIncomplete(info) {
+  return !normalizeCountryCode(info?.countryCode) || (!info.city && (!info.isp || info.isp === 'N/A'));
+}
+
 function scheduleOfflineRetry(repeat = true) {
   if (offlineRetry.timer || (!repeat && offlineRetry.step >= OFFLINE_RETRY_MS.length)) return;
   const delay = OFFLINE_RETRY_MS[Math.min(offlineRetry.step++, OFFLINE_RETRY_MS.length - 1)];
-  offlineRetry.timer = setTimeout(() => {
+  offlineRetry.timer = setTimeout(async () => {
     offlineRetry.timer = null;
+    if (!(await autoChecksEnabled())) return;
     fetchAllBackgroundLocations(true).catch(() => {});
   }, delay);
+}
+
+async function autoChecksEnabled() {
+  const { appSettings } = await chrome.storage.local.get('appSettings');
+  return appSettings?.enableAutoRefresh !== false;
 }
 
 function resetOfflineRetry() {
@@ -878,7 +924,8 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
         'appSettings',
         'lastProbeAt',
         'routeState',
-        'routeDivergence'
+        'routeDivergence',
+        'pendingV6Notice'
       ]);
 
       const cachedV4 = stored.latestV4Info || null;
@@ -933,8 +980,13 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
         await commit(updateObj);
         if (route.notify && v4Changed && current() && await sendIPChangeNotification('IPv4', route.notify.from, pendingV4)) {
           route.state.announcedIp = route.notify.to;
+          await commit({ routeState: route.state });
         }
-        if (v6Changed && cachedV6?.ip && stored.appSettings?.notifyIPv6 !== false && current()) sendIPChangeNotification('IPv6', cachedV6.ip, pendingV6);
+        if (v6Changed && cachedV6?.ip && stored.appSettings?.notifyIPv6 !== false && current()) {
+          // Kept until delivered: a throttled or failed IPv6 alert is retried on the next check.
+          const delivered = await sendIPChangeNotification('IPv6', cachedV6.ip, pendingV6);
+          await commit({ pendingV6Notice: delivered ? null : { from: stored.pendingV6Notice?.from || cachedV6.ip, to: fastV6 } });
+        }
         await withTimeout(current() && updateToolbarDisplay(pendingV4, pendingV6, false).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
       }
 
@@ -956,7 +1008,7 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
           }
           const age = Date.now() - (cachedV4?.updatedAt || 0);
           const needsEnrichment = v4Changed || !cachedV4?.updatedAt || cachedV4.pending === true ||
-            (!cachedV4.countryCode && age >= GEO_RETRY_INTERVAL_MS) ||
+            (geoIncomplete(cachedV4) && age >= GEO_RETRY_INTERVAL_MS) ||
             (forceRefresh && age >= MANUAL_GEO_REFRESH_MS);
           const info = needsEnrichment ? await getGeoLocation(fastV4.ip, fastV4.countryCode, v4Changed) : cachedV4;
           return info && info.vantage !== fastV4.vantage ? { ...info, vantage: fastV4.vantage } : info;
@@ -965,7 +1017,7 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
           if (!fastV6) return null;
           const age = Date.now() - (cachedV6?.updatedAt || 0);
           const needsEnrichment = v6Changed || !cachedV6?.updatedAt || cachedV6.pending === true ||
-            (!cachedV6.countryCode && age >= GEO_RETRY_INTERVAL_MS) ||
+            (geoIncomplete(cachedV6) && age >= GEO_RETRY_INTERVAL_MS) ||
             (forceRefresh && age >= MANUAL_GEO_REFRESH_MS);
           return needsEnrichment ? getGeoLocation(fastV6, '', v6Changed) : cachedV6;
         })(),
@@ -981,8 +1033,17 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
       });
       if (route.confirmed.length && current()) sendRouteDivergenceNotification(divergence, finalV4);
       // A change confirmed on a later probe (the IP itself did not change on this one).
+      const v6Notice = stored.pendingV6Notice;
+      if (v6Notice && !v6Changed && current()) {
+        if (finalV6?.ip !== v6Notice.to || stored.appSettings?.notifyIPv6 === false) {
+          await commit({ pendingV6Notice: null }); // superseded by a newer address, or switched off
+        } else if (await sendIPChangeNotification('IPv6', v6Notice.from, finalV6)) {
+          await commit({ pendingV6Notice: null });
+        }
+      }
       if (route.notify && !v4Changed && current() && await sendIPChangeNotification('IPv4', route.notify.from, finalV4)) {
         route.state.announcedIp = route.notify.to;
+        await commit({ routeState: route.state });
       }
       updateObj.routeState = route.state;
       updateObj.routeDivergence = divergence;
@@ -1006,7 +1067,15 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
   return probe;
 }
 
-async function applyPrivacyShield() {
+// Serialized: an older application finishing late must not overwrite a newer result.
+let privacyChain = Promise.resolve();
+function applyPrivacyShield() {
+  const run = privacyChain.catch(() => false).then(() => applyPrivacyShieldNow());
+  privacyChain = run;
+  return run;
+}
+
+async function applyPrivacyShieldNow() {
   let effective = false;
   try {
     const res = await chrome.storage.local.get('appSettings');
@@ -1051,7 +1120,8 @@ async function applyPrivacyShield() {
  * device is offline, and before each attempt it checks with a plain request that the server is
  * reachable. Offline, or where the server is blocked, it waits quietly and retries with backoff.
  */
-const FAST_CHANNEL_URLS = ['wss://35-232-61-175.sslip.io/v1/ws', 'ws://35.232.61.175/v1/ws'];
+// Encrypted only: without it, the 30-second checks carry on.
+const FAST_CHANNEL_URLS = ['wss://35-232-61-175.sslip.io/v1/ws'];
 const FAST_PING_MS = 10_000;
 const FAST_PONG_TIMEOUT_MS = 5_000;
 const FAST_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
@@ -1127,7 +1197,9 @@ async function connectFastChannel() {
   fastChannel.ws = ws;
   let opened = false;
   let openedAt = 0;
+  const isCurrent = () => fastChannel.enabled && fastChannel.ws === ws;
   ws.onopen = () => {
+    if (!isCurrent()) { try { ws.close(1000, 'obsolete'); } catch (e) {} return; }
     opened = true;
     openedAt = Date.now();
     fastChannel.attempt = 0;
@@ -1148,11 +1220,12 @@ async function connectFastChannel() {
     fastChannel.pingTimer = setTimeout(ping, FAST_PING_MS);
   };
   ws.onmessage = (event) => {
+    if (!isCurrent()) return;
     let msg;
     try { msg = JSON.parse(event.data); } catch (e) { return; }
     if (msg?.type === 'pong') clearTimeout(fastChannel.pongTimer);
     if ((msg?.type === 'hello' || msg?.type === 'pong') && (isValidIPv4(msg.ip) || isValidIPv6(msg.ip))) {
-      onFastChannelIp(msg.ip).catch(() => {});
+      onFastChannelIp(msg.ip, isCurrent).catch(() => {});
     }
   };
   ws.onerror = () => {}; // onclose follows
@@ -1163,14 +1236,17 @@ async function connectFastChannel() {
     // Offline, the check makes no requests, so it always runs.
     const dropped = opened && fastChannel.ws === ws && (!deviceOnline() ||
       Date.now() - openedAt >= FAST_DROP_PROBE_GAP_MS || Date.now() - fastChannel.dropProbeAt >= FAST_DROP_PROBE_GAP_MS);
-    if (fastChannel.ws === ws) fastChannel.ws = null;
+    // An obsolete socket (replaced, or the channel switched off) must not touch the current
+    // socket's timers or schedule reconnects.
+    if (fastChannel.ws !== ws) return;
+    fastChannel.ws = null;
     if (dropped) {
       fastChannel.dropProbeAt = Date.now();
       fetchAllBackgroundLocations(true).catch(() => {});
     }
     clearTimeout(fastChannel.pingTimer);
     clearTimeout(fastChannel.pongTimer);
-    if (!opened) fastChannel.urlIndex++; // try the next address (wss first, then plain ws)
+    if (!opened) fastChannel.urlIndex++; // with several addresses, try the next one
     scheduleFastReconnect();
   };
 }
@@ -1181,9 +1257,9 @@ function scheduleFastReconnect() {
   fastChannel.retryTimer = setTimeout(() => { fastChannel.retryTimer = null; connectFastChannel(); }, delay);
 }
 
-async function onFastChannelIp(ip) {
+async function onFastChannelIp(ip, isCurrent = () => true) {
   const { fastChannelIp } = await chrome.storage.local.get('fastChannelIp');
-  if (ip === fastChannelIp) return;
+  if (ip === fastChannelIp || !isCurrent()) return;
   await chrome.storage.local.set({ fastChannelIp: ip });
   // First value is a baseline. Afterwards a different IP means the network changed: verify now
   // with the regular providers instead of waiting for the alarm. Only a trigger, never displayed.
@@ -1226,7 +1302,7 @@ chrome.runtime.onStartup.addListener(() => {
   chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeError'], (res) => {
     updateToolbarDisplay(res.latestV4Info || null, res.latestV6Info || null, res.isOffline || false, res.probeError === true);
   });
-  fetchAllBackgroundLocations(true);
+  autoChecksEnabled().then(on => on && fetchAllBackgroundLocations(true)).catch(() => {});
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -1235,7 +1311,34 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+// Every page changes settings through this queue, field by field, so two pages saving at the same
+// time can never overwrite each other's choice with a stale copy.
+let settingsChain = Promise.resolve();
+// patch: fields to set, or a function of the current settings returning those fields.
+function updateSettings(patch) {
+  const run = settingsChain.catch(() => {}).then(async () => {
+    const { appSettings } = await chrome.storage.local.get('appSettings');
+    const fields = typeof patch === 'function' ? patch(appSettings || {}) : patch;
+    const next = { ...(appSettings || {}), ...fields };
+    await chrome.storage.local.set({ appSettings: next });
+    const shieldEffective = await applyPrivacyShield();
+    if (next.enableAutoRefresh === false) resetOfflineRetry();
+    chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeError'], (res) => {
+      updateToolbarDisplay(res.latestV4Info || null, res.latestV6Info || null, res.isOffline || false, res.probeError === true);
+    });
+    return { settings: next, shieldEffective };
+  });
+  settingsChain = run;
+  return run;
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.type === 'UPDATE_SETTINGS' && request.patch && typeof request.patch === 'object') {
+    updateSettings(request.patch)
+      .then(({ settings, shieldEffective }) => sendResponse({ status: 'ok', settings, shieldEffective }))
+      .catch(() => sendResponse({ status: 'error' }));
+    return true;
+  }
   if (request.type === 'REFRESH_NOW') {
     fetchAllBackgroundLocations(true).then((data) => sendResponse({ status: 'ok', data })).catch(() => sendResponse({ status: 'error' }));
     return true;
@@ -1254,16 +1357,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   if (request.type === 'TOGGLE_SHIELD') {
-    chrome.storage.local.get('appSettings', async (res) => {
-      const current = res.appSettings || {};
-      const newStatus = (typeof request.explicitState === 'boolean')
-        ? request.explicitState
-        : (current.enableAntiLeakShield === false ? true : false);
-      current.enableAntiLeakShield = newStatus;
-      await chrome.storage.local.set({ appSettings: current });
-      const shieldEffective = await applyPrivacyShield();
-      sendResponse({ status: 'ok', shieldActive: newStatus, shieldEffective });
-    });
+    (async () => {
+      const explicit = typeof request.explicitState === 'boolean' ? request.explicitState : null;
+      const { settings, shieldEffective } = await updateSettings(current =>
+        ({ enableAntiLeakShield: explicit ?? current.enableAntiLeakShield === false }));
+      sendResponse({ status: 'ok', shieldActive: settings.enableAntiLeakShield, shieldEffective });
+    })().catch(() => sendResponse({ status: 'error' }));
     return true;
   }
 });
@@ -1284,11 +1383,11 @@ if (typeof self !== 'undefined' && typeof self.addEventListener === 'function') 
     fastChannel.retryTimer = null;
     syncFastChannel().catch(() => {});
     resetOfflineRetry();
-    fetchAllBackgroundLocations(true).catch(() => {});
+    autoChecksEnabled().then(on => on && fetchAllBackgroundLocations(true)).catch(() => {});
   });
   // Lost the network: show it in the toolbar at once (the check makes no requests while offline).
   self.addEventListener('offline', () => {
-    fetchAllBackgroundLocations(true).catch(() => {});
+    autoChecksEnabled().then(on => on && fetchAllBackgroundLocations(true)).catch(() => {});
   });
 }
 

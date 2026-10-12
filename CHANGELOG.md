@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.0.3
+
+A review release: fixes from a full code and interface review of 1.0.2.
+
+- Settings changed on two pages at the same time can no longer undo each other.
+- IP change alerts are more reliable:
+  - IPv4 and IPv6 changes in the same moment both arrive.
+  - An alert Chrome failed to show is retried.
+  - A restart never repeats an alert.
+- On networks where one IP service stays silent for a long time, LeakHalo no longer keeps showing an old IPv4.
+- The popup handles more situations clearly:
+  - IPv6-only networks.
+  - "Last known" when the IP services do not answer.
+  - Offline, with no copy button where there is no address.
+  - An unknown country, shown as unknown instead of "XX".
+  - The city stays visible when map links are off.
+  - "Tehran, Tehran" is shown once.
+  - The WebRTC check never compares against stale IPs.
+- The instant-detection connection is always encrypted.
+- Better screen-reader labels.
+- Requires Chrome 120 or newer.
+
 ## 1.0.2
 
 - **Offline at a glance.**

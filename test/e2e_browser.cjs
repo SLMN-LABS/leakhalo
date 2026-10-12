@@ -234,7 +234,7 @@ async function launch({ mocked, port }) {
   }));
   await check('First install automatically opens exactly one welcome tab with the live Iran connection', async () => {
     welcome = await waitFor(() => context.pages().find(p => p.url() === `chrome-extension://${id}/welcome/welcome.html`), 10_000, 'automatic welcome tab');
-    const s = await waitFor(async () => { const x = await welcomeState(welcome); return x.country === 'Iran' && x.flagW === 96 && x; }, 10_000, 'welcome connection');
+    const s = await waitFor(async () => { const x = await welcomeState(welcome); return x.country === 'Iran' && x.flagW === 96 && x.state === 'live' && x; }, 15_000, 'welcome connection');
     assert(s.ip === IR && /Tehran/.test(s.city) && /AS58224/.test(s.network) && /flags-rect\/flag-ir\.png$/.test(s.flag), JSON.stringify(s));
     assert(context.pages().filter(p => p.url().endsWith('/welcome/welcome.html')).length === 1 && welcomePages.size === 1, 'more than one automatic welcome tab');
     await welcome.reload(); // register request/error monitoring through an entire load
@@ -712,6 +712,53 @@ async function launch({ mocked, port }) {
     const b = await waitFor(async () => { const x = await tz(); return /tz-mismatch/.test(x.cls) && x; }, 8_000, 'time zone warning');
     assert(b.text === 'Europe/Berlin · your clock Asia/Tehran', JSON.stringify(b));
     await popup.close();
+  });
+  await check('Popup states: unknown country, IPv6-only network, map links off, last known result', async () => {
+    popup = await openPopup();
+    const ui = () => popup.evaluate(() => ({
+      country: document.getElementById('v4Country').textContent.trim(),
+      city: document.getElementById('v4CityRegion').textContent.trim(),
+      v4Card: getComputedStyle(document.getElementById('v4Card')).display !== 'none',
+      v4Pill: getComputedStyle(document.getElementById('v4InactivePill')).display !== 'none',
+      v6Pill: document.getElementById('v6PillMsg').textContent.trim(),
+      tag: getComputedStyle(document.getElementById('v4TypeTag')).display !== 'none' ? document.getElementById('v4TypeTag').textContent.trim() : '',
+      mapHref: document.getElementById('v4MapBtn').getAttribute('href'),
+      pinShown: getComputedStyle(document.querySelector('#v4MapBtn .location-pin')).display !== 'none',
+      copyable: !document.getElementById('v4IpRow').classList.contains('no-ip')
+    }));
+    try {
+      // Cloudflare's "XX" (unknown) is not a country.
+      net.edge = '203.0.113.201'; net.indep = '203.0.113.201'; net.loc = 'XX'; net.v6 = null;
+      await probe();
+      const unknown = await waitFor(async () => { const x = await ui(); return x.country !== 'Germany' && x.country !== 'Iran' && x; }, 15_000, 'unknown country');
+      assert(!/XX/.test(unknown.country + unknown.city) && !/XX/.test((await action()).title), JSON.stringify({ unknown, title: (await action()).title }));
+      // Same city and region are shown once.
+      net.edge = IR; net.indep = IR; net.loc = 'IR';
+      await probe();
+      const iran = await waitFor(async () => { const x = await ui(); return x.country === 'Iran' && x; }, 15_000, 'Iran');
+      assert(iran.city === 'Tehran', `city ${iran.city}`);
+      // Map links off: the place name stays, the link and pin go.
+      await settings({ showMap: false });
+      const noMap = await waitFor(async () => { const x = await ui(); return !x.pinShown && x; }, 8_000, 'map links off');
+      assert(noMap.city === 'Tehran' && noMap.mapHref === null, JSON.stringify(noMap));
+      await settings({ showMap: true });
+      // Providers answer with errors: the shown result is marked as last known.
+      for (const h of ['cloudflare.com', 'ipv4.icanhazip.com', 'api.ipify.org', 'checkip.amazonaws.com', 'api6.ipify.org', 'ipv6.icanhazip.com']) net.down.add(h);
+      await probe();
+      const stale = await waitFor(async () => { const x = await ui(); return x.tag === 'Last known' && x; }, 10_000, 'last known tag');
+      assert(stale.country === 'Iran', JSON.stringify(stale));
+      net.down.clear();
+      // IPv6-only network: a one-line IPv4 note instead of a failure card.
+      net.edge = null; net.indep = null; net.v6 = US6;
+      await probe(); await probe();
+      const v6only = await waitFor(async () => { const x = await ui(); return x.v4Pill && x; }, 15_000, 'IPv4 pill on an IPv6-only network');
+      assert(!v6only.v4Card, JSON.stringify(v6only));
+    } finally {
+      net.down.clear();
+      net.edge = DE; net.indep = DE; net.loc = 'DE'; net.v6 = null;
+      await probe();
+      await popup.close();
+    }
   });
   await check('IPv6 change alerts follow their own switch', async () => {
     const v6Notes = async () => (await notes()).filter(n => /IPv6/.test(n.title)).length;

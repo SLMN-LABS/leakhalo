@@ -771,3 +771,20 @@ body {
   height: 14px;
   background: rgba(255, 255, 255, 0.12);
 }
+
+/* Address rows without an address (offline, unavailable) are not copy buttons. */
+.ip-hero-row.no-ip { cursor: default !important; }
+.ip-hero-row.no-ip:hover { background: rgba(15, 23, 42, 0.5); border-color: rgba(255, 255, 255, 0.07); box-shadow: none; }
+.ip-hero-row.no-ip .copy-action { display: none; }
+
+/* Map links off: the place name stays as plain text. */
+.location-link.no-map { cursor: default; pointer-events: none; color: #94a3b8; }
+.location-link.no-map .location-pin { display: none; }
+
+/* Values people may want to select and copy. */
+.info-val, .route-alert-row, .city-text { -webkit-user-select: text; user-select: text; }
+
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}

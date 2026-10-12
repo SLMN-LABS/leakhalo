@@ -48,9 +48,16 @@ function formatIspAsn(rawIsp, rawAsn) {
   return cleanIsp;
 }
 
+// Pseudo codes (XX unknown, T1 Tor, EU region…) are never a country or a flag.
+const PSEUDO_COUNTRY_CODES = new Set(['XX', 'ZZ', 'T1', 'A1', 'A2', 'O1', 'EU', 'AP']);
+function realCountryCode(code) {
+  const upper = typeof code === 'string' ? code.trim().toUpperCase() : '';
+  return /^[A-Z]{2}$/.test(upper) && !PSEUDO_COUNTRY_CODES.has(upper) ? upper : '';
+}
+
 // Same rectangular flag → square flag → app icon fallback as the popup.
 function setFlag(img, countryCode) {
-  const code = /^[a-z]{2}$/i.test(countryCode || '') ? countryCode.toLowerCase() : '';
+  const code = realCountryCode(countryCode).toLowerCase();
   if (img.dataset.code === code) return;
   img.dataset.code = code;
   img.onerror = null;
@@ -64,7 +71,8 @@ function setFlag(img, countryCode) {
 
 function country(info) {
   if (info.pending === true && !info.countryCode) return locationTimedOut ? 'Location unavailable' : 'Locating…';
-  return getFullCountryName(info.countryCode, info.country);
+  const code = realCountryCode(info.countryCode);
+  return getFullCountryName(code, code ? info.country : '');
 }
 
 function render() {
@@ -89,7 +97,7 @@ function render() {
   setText('connectionCountry', offline ? 'You’re offline' : failed ? 'Unable to verify network' : info ? country(info) : 'Checking your connection…');
   const locParts = info ? [info.city, info.region].filter((part, i, all) => part && all.indexOf(part) === i) : [];
   setText('connectionCity', offline ? 'Connect to the internet to check your IP' : failed ? 'LeakHalo will check again in the background' : loading ? 'Waiting for the first network check' : pending ? (locationTimedOut ? 'Location lookup did not finish' : 'Locating…') : locParts.join(', ') || 'City unavailable');
-  setText('connectionV4', offline || failed ? 'Unavailable' : v4?.ip || (loading ? 'Checking…' : 'Not detected'));
+  setText('connectionV4', offline || failed ? 'Unavailable' : info?.ip || (loading ? 'Checking…' : 'Not detected'));
   setText('connectionV6', offline || failed ? 'Unavailable' : v6?.ip || (loading ? 'Checking…' : 'Not detected'));
   setText('connectionV6Location', !offline && !failed && v6 ? [country(v6), v6.city].filter(Boolean).join(' · ') : '');
   setText('connectionNetwork', offline || failed ? 'Unavailable' : info ? formatIspAsn(info.isp, info.asn) || (pending && !locationTimedOut ? 'Locating…' : 'Network unavailable') : 'Checking…');
@@ -111,16 +119,13 @@ function setSaveStatus(message, kind = 'ready') {
   byId('saveStatus').dataset.state = kind;
 }
 
-// Same per-field merge and SETTINGS_UPDATED side effect as the Settings page.
+// Same per-field update through the service worker as the Settings page.
 function queueSave(key, value) {
   pendingCounts.set(key, (pendingCounts.get(key) || 0) + 1);
   setSaveStatus('Saving…', 'saving');
   saveChain = saveChain.catch(() => {}).then(async () => {
     try {
-      const { appSettings } = await chrome.storage.local.get('appSettings');
-      const next = { ...(appSettings || {}), [key]: value };
-      await chrome.storage.local.set({ appSettings: next });
-      const response = await chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' });
+      const response = await chrome.runtime.sendMessage({ type: 'UPDATE_SETTINGS', patch: { [key]: value } });
       if (response?.status !== 'ok') throw new Error('Browser setting update failed');
       setSaveStatus('Saved in this browser');
     } catch (error) {
@@ -246,7 +251,7 @@ const globe = (() => {
       const lat = Number(info?.lat), lon = Number(info?.lon);
       const ok = info && Number.isFinite(lat) && Number.isFinite(lon) && !(lat === 0 && lon === 0);
       target = ok ? { lat, lon } : null;
-      if (ok) setText('globeLabelText', `You appear here · ${[info.city, getFullCountryName(info.countryCode, info.country)].filter(Boolean)[0] || ''}`.replace(/ · $/, ''));
+      if (ok) setText('globeLabelText', `You appear here · ${[info.city, getFullCountryName(realCountryCode(info.countryCode), realCountryCode(info.countryCode) ? info.country : '')].filter(Boolean)[0] || ''}`.replace(/ · $/, ''));
       draw(performance.now());
     }
   };
@@ -277,8 +282,9 @@ chrome.storage.local.get(stateKeys).then(data => {
 
 const firstCheckTimer = setTimeout(() => { checkFailed = true; render(); }, 30_000);
 // One check on load also re-enriches a pending result left by an interrupted worker.
-chrome.runtime.sendMessage({ type: 'CHECK_NETWORK', force: true }).then(() => {
+chrome.runtime.sendMessage({ type: 'CHECK_NETWORK', force: true }).then(async () => {
   clearTimeout(firstCheckTimer);
+  state = { ...state, ...(await chrome.storage.local.get(stateKeys)) };
   checkFailed = true; // only affects an empty result; stored failure/offline flags remain authoritative
   render();
 }).catch(() => {

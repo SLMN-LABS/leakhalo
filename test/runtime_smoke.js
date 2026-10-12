@@ -32,6 +32,8 @@ let toolbarGetGate = null;
 const toolbar = {};
 const PROXIED_V4 = '203.0.113.9';
 const notifications = [];
+let cloudflareLoc = 'US';
+let notifyFails = false; // Chrome reports chrome.runtime.lastError for notifications.create
 
 function result(body, ok = true, status = ok ? 200 : 500, headers = {}) {
   const text = typeof body === 'string' ? body : JSON.stringify(body);
@@ -63,7 +65,10 @@ const chrome = {
     setIcon: async (icon) => { toolbar.icon = icon; }, setBadgeText: async ({ text }) => { toolbar.badge = text; },
     setBadgeBackgroundColor: async ({ color }) => { toolbar.color = color; }, setTitle: async ({ title }) => { toolbar.title = title; }
   },
-  notifications: { create: (_id, options, callback) => { notifications.push(options); callback?.(); } },
+  notifications: { create: (_id, options, callback) => {
+    if (notifyFails) { chrome.runtime.lastError = { message: 'Unable to download all specified images.' }; callback?.(); delete chrome.runtime.lastError; return; }
+    notifications.push(options); callback?.();
+  } },
   privacy: { network: {
     webRTCIPHandlingPolicy: {
       onChange: { addListener(listener) { policyChangeListener = listener; } },
@@ -84,7 +89,7 @@ const context = vm.createContext({
   async fetch(url) {
     requests.push(url);
     if (networkMode === 'failed') return result('', false);
-    if (url.startsWith('https://cloudflare.com/')) return cloudflareDown ? result('', false) : result(`ip=${currentV4}\nloc=US\n`);
+    if (url.startsWith('https://cloudflare.com/')) return cloudflareDown ? result('', false) : result(`ip=${currentV4}\nloc=${cloudflareLoc}\n`);
     if (new URL(url).hostname === 'api.ipify.org') {
       if (stallIpify) return { ...result(''), text: () => new Promise(() => {}) };
       return rateLimitIpify
@@ -184,7 +189,7 @@ async function main() {
   const direct = currentV4;
   // Default: the warning is off. The main IP must stay put and nothing may be shown or sent.
   ipifyV4 = PROXIED_V4;
-  data.lastNotifTime = 0; data.lastRouteNotifTime = 0;
+  data.lastNotifTimeIPv4 = data.lastNotifTimeIPv6 = 0; data.lastRouteNotifTime = 0;
   const quietBefore = notifications.length;
   const geoBefore = requests.filter(url => url.includes(PROXIED_V4)).length;
   for (let i = 0; i < 3; i++) await vm.runInContext('fetchAllBackgroundLocations(true, POPUP_PROBE_INTERVAL_MS)', context);
@@ -199,7 +204,7 @@ async function main() {
   const ipChangeCount = () => notifications.filter(n => /IP Changed/.test(n.title)).length;
   const altIps = () => Array.from(data.routeDivergence?.alts || [], alt => alt.ip);
   ipifyV4 = PROXIED_V4;
-  data.lastNotifTime = 0;
+  data.lastNotifTimeIPv4 = data.lastNotifTimeIPv6 = 0;
   const notesBefore = notifications.length;
   await vm.runInContext('fetchAllBackgroundLocations(true, POPUP_PROBE_INTERVAL_MS)', context);
   assert.equal(data.latestV4Info.ip, direct, 'The displayed IP must come from the edge source, not whichever answers');
@@ -258,7 +263,7 @@ async function main() {
   }
 
   // A real change is still detected and notified when every vantage point moves.
-  data.lastNotifTime = 0;
+  data.lastNotifTimeIPv4 = data.lastNotifTimeIPv6 = 0;
   let changesBefore = ipChangeCount();
   currentV4 = '198.51.100.30';
   await vm.runInContext('fetchAllBackgroundLocations(true)', context);
@@ -266,19 +271,19 @@ async function main() {
   assert.equal(ipChangeCount(), changesBefore + 1, 'A real IP change must notify');
 
   // Through the real caller: a throttled announcement is retried later with the right baseline.
-  data.lastNotifTime = 0;
+  data.lastNotifTimeIPv4 = data.lastNotifTimeIPv6 = 0;
   currentV4 = '198.51.100.31';
   await vm.runInContext('fetchAllBackgroundLocations(true)', context);
   assert.equal(ipChangeCount(), changesBefore + 2);
   currentV4 = '198.51.100.32';
   await vm.runInContext('fetchAllBackgroundLocations(true)', context);
   assert.equal(ipChangeCount(), changesBefore + 2, 'Within 4 s of the last notification it is throttled');
-  data.lastNotifTime = 0;
+  data.lastNotifTimeIPv4 = data.lastNotifTimeIPv6 = 0;
   await vm.runInContext('fetchAllBackgroundLocations(true)', context);
   assert.equal(ipChangeCount(), changesBefore + 3, 'The throttled change is announced on a later probe');
   assert.match(notifications.at(-1).message, /from 198\.51\.100\.31 to 198\.51\.100\.32/);
   currentV4 = direct;
-  data.lastNotifTime = 0;
+  data.lastNotifTimeIPv4 = data.lastNotifTimeIPv6 = 0;
   await vm.runInContext('fetchAllBackgroundLocations(true)', context);
 
   // --- Decision function, exercised directly (production code) ---
@@ -474,7 +479,7 @@ async function main() {
   geoGate = new Promise(() => {});
   notifyGeoStarted = () => {};
   currentV4 = '198.51.100.61';
-  data.lastNotifTime = 0;
+  data.lastNotifTimeIPv4 = data.lastNotifTimeIPv6 = 0;
   await vm.runInContext('fetchAllBackgroundLocations(true)', context);
   assert.equal(data.latestV4Info.ip, '198.51.100.61');
   assert.notEqual(data.latestV4Info.country, 'Locating...', 'A hung lookup must not leave a placeholder');
@@ -511,6 +516,84 @@ async function main() {
   assert.equal(requests.length, afterLimit, 'A rate-limited provider must not receive immediate retries');
   assert.ok(data.providerCooldowns['https://api.ipify.org'] > Date.now());
   rateLimitIpify = false;
+
+  // Pseudo country codes (Cloudflare: XX unknown, T1 Tor) never show as a country or flag.
+  geoDown = true;
+  vm.runInContext('geoMemoryCache.clear()', context);
+  for (const code of ['XX', 'T1']) {
+    cloudflareLoc = code;
+    currentV4 = code === 'XX' ? '198.51.100.70' : '198.51.100.72';
+    await vm.runInContext('fetchAllBackgroundLocations(true)', context);
+    assert.equal(data.latestV4Info.ip, currentV4);
+    assert.equal(data.latestV4Info.countryCode, '', `${code} must not be stored as a country`);
+    assert.ok(!/\(XX\)|\(T1\)/.test(toolbar.title || ''), `toolbar must not show ${code}: ${toolbar.title}`);
+  }
+  assert.equal(vm.runInContext("normalizeCountryCode('xx') + normalizeCountryCode('EU') + normalizeCountryCode('de')", context), 'DE');
+  cloudflareLoc = 'US';
+  geoDown = false;
+
+  // A country-only result (all location services failed) is enriched again on the retry interval.
+  vm.runInContext('geoMemoryCache.clear()', context);
+  assert.equal(vm.runInContext("geoIncomplete({ countryCode: 'US', city: '', isp: 'N/A' })", context), true);
+  assert.equal(vm.runInContext("geoIncomplete({ countryCode: 'US', city: 'Berlin', isp: 'X' })", context), false);
+
+  // A notification Chrome failed to create is not treated as delivered: the next check retries it.
+  const notifySetting = data.appSettings.enableNotifications;
+  data.appSettings.enableNotifications = true;
+  data.lastNotifTimeIPv4 = data.lastNotifTimeIPv6 = 0;
+  const beforeFail = notifications.length;
+  notifyFails = true;
+  currentV4 = '198.51.100.74';
+  await vm.runInContext('fetchAllBackgroundLocations(true)', context);
+  assert.equal(notifications.length, beforeFail);
+  notifyFails = false;
+  await vm.runInContext('fetchAllBackgroundLocations(true)', context);
+  assert.equal(notifications.length, beforeFail + 1, 'A failed alert must be retried');
+  assert.match(notifications.at(-1).message, /198\.51\.100\.74/);
+  await vm.runInContext('fetchAllBackgroundLocations(true)', context);
+  assert.equal(notifications.length, beforeFail + 1, 'A delivered alert is not repeated');
+  assert.equal(data.routeState.announcedIp, '198.51.100.74', 'The announcement is saved right after delivery');
+  data.appSettings.enableNotifications = notifySetting;
+
+  // Old alternate-route evidence stops pinning the shown IP once the edge has been silent for long.
+  const release = JSON.parse(vm.runInContext(`(() => {
+    const A = { ip: '198.51.100.80', source: 'Cloudflare' }, B = { ip: '198.51.100.81', source: 'ipify' };
+    let st = null, cached = null, div = null;
+    const step = (obs, now) => {
+      const r = evaluateIPv4Route(obs, cached, st, div, now);
+      st = r.state; div = r.divergence;
+      if (r.primary) cached = { ip: r.primary.ip, vantage: r.primary.vantage };
+      return r;
+    };
+    step({ edge: A, independent: A }, 0);
+    step({ edge: A, independent: B }, 1000);
+    const held = [];
+    for (let i = 0; i < 4; i++) held.push(step({ edge: null, independent: B }, 2000 + i * 1000).held);
+    const late = [];
+    for (let i = 0; i < 3; i++) late.push(step({ edge: null, independent: B }, EDGE_SILENT_RELEASE_MS + 5000 + i * 1000).primary?.ip || null);
+    return JSON.stringify({ held, late, shown: cached.ip });
+  })()`, context));
+  assert.deepEqual(release.held, [true, true, true, true], 'Known alternate evidence holds the IP at first');
+  assert.deepEqual(release.late, [null, '198.51.100.81', '198.51.100.81'], 'After a long edge silence the new IP is confirmed');
+
+  // Concurrent settings changes from different pages are both kept.
+  const settingsBefore = { ...data.appSettings };
+  await Promise.all([
+    vm.runInContext('updateSettings({ enableFastDetection: false })', context),
+    vm.runInContext('updateSettings({ showMap: false })', context)
+  ]);
+  assert.equal(data.appSettings.enableFastDetection, false);
+  assert.equal(data.appSettings.showMap, false, 'A concurrent change must not be lost');
+  data.appSettings = settingsBefore;
+
+  // Two implicit Armor toggles at once end where they started (each inverts the current value).
+  const shieldBefore = data.appSettings.enableAntiLeakShield !== false;
+  await Promise.all([1, 2].map(() => vm.runInContext('updateSettings(c => ({ enableAntiLeakShield: c.enableAntiLeakShield === false }))', context)));
+  assert.equal(data.appSettings.enableAntiLeakShield !== false, shieldBefore, 'Concurrent toggles must both apply');
+  data.appSettings = settingsBefore;
+
+  // One IPv6 address in two spellings is the same address.
+  assert.equal(vm.runInContext("canonicalIPv6('2001:DB8:0:0:0:0:0:1')", context), '2001:db8::1');
 
   networkMode = 'failed';
   const failed = await vm.runInContext('fetchAllBackgroundLocations(true)', context);

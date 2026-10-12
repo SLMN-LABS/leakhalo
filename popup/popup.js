@@ -21,6 +21,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const v4MapBtn = document.getElementById('v4MapBtn');
   const v4IspRow = document.getElementById('v4IspRow');
   const v4TzRow = document.getElementById('v4TzRow');
+  const v4Card = document.getElementById('v4Card');
+  const v4InactivePill = document.getElementById('v4InactivePill');
+  const v6PillMsg = document.getElementById('v6PillMsg');
   const v4Tz = document.getElementById('v4Tz');
 
   const v6ActiveCard = document.getElementById('v6ActiveCard');
@@ -94,6 +97,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (cfg.btnOff) shieldToggleBtn.classList.add('off');
       else shieldToggleBtn.classList.remove('off');
       shieldToggleBtn.title = cfg.btnTitle;
+      shieldToggleBtn.setAttribute('aria-pressed', String(!cfg.btnOff));
     }
     if (shieldDot && shieldStatusText) {
       shieldDot.className = cfg.dotClass;
@@ -108,6 +112,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!webrtcDot || !webrtcStatus || !webrtcItem) return;
 
     const cfg = STATUS_CONFIG.webrtc[runtimeState.webrtc];
+    const divider = document.querySelector('.sec-divider');
+    if (divider) divider.style.display = cfg.visible ? '' : 'none';
     if (!cfg.visible) {
       webrtcItem.style.display = 'none';
       return;
@@ -147,8 +153,9 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(() => { isTogglingShield = false; }, 100);
       if (res && typeof res.shieldActive === 'boolean') {
         setShieldState(res.shieldActive ? (res.shieldEffective ? 'on' : 'error') : 'off');
-        chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'appSettings', 'shieldEffective'], (data) => {
-          runSecurityAudit(data.latestV4Info, data.latestV6Info, data.appSettings, data.shieldEffective);
+        chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'appSettings', 'shieldEffective', 'isOffline', 'probeError', 'v4Unverified'], (data) => {
+          const unverified = data.isOffline === true || data.probeError === true || data.v4Unverified === true;
+          runSecurityAudit(data.latestV4Info, data.latestV6Info, data.appSettings, data.shieldEffective, unverified);
         });
       } else {
         loadData(true);
@@ -256,9 +263,39 @@ document.addEventListener('DOMContentLoaded', () => {
   setupClickToCopy(v4IpRow, v4Ip, v4CopyStatus);
   setupClickToCopy(v6IpRow, v6Ip, v6CopyStatus);
 
+  // Pseudo codes (XX unknown, T1 Tor, EU region…) are never a country or a flag.
+  const PSEUDO_COUNTRY_CODES = new Set(['XX', 'ZZ', 'T1', 'A1', 'A2', 'O1', 'EU', 'AP']);
+  function realCountryCode(code) {
+    const upper = typeof code === 'string' ? code.trim().toUpperCase() : '';
+    return /^[A-Z]{2}$/.test(upper) && !PSEUDO_COUNTRY_CODES.has(upper) ? upper : '';
+  }
+
+  // "Tehran, Tehran" reads as a mistake: show a repeated name once.
+  function placeText(city, region) {
+    return [city, region].filter((part, i, all) => part && all.indexOf(part) === i).join(', ');
+  }
+
+  // An address row can be copied only while it shows an address.
+  function setCopyable(row, ip, label) {
+    row.classList.toggle('no-ip', !ip);
+    row.tabIndex = ip ? 0 : -1;
+    if (ip) {
+      row.setAttribute('role', 'button');
+      row.setAttribute('aria-label', `${label} ${ip}. Copy`);
+      row.title = 'Click to copy IP address';
+    } else {
+      row.removeAttribute('role');
+      row.removeAttribute('aria-label');
+      row.removeAttribute('title');
+    }
+  }
+
   // Popup flags are rectangular artwork (assets/flags-rect, 96x72) so they stay sharp in the
   // 36x26 frame; the square toolbar set is the fallback, then the app icon.
   function setPopupFlag(img, watermark, code) {
+    // Re-assigning the same flag every 3 seconds would only re-decode it.
+    if (img.dataset.code === code) return;
+    img.dataset.code = code;
     const rect = `/assets/flags-rect/flag-${code}.png`;
     const square = `/assets/flags/flag-${code}.png`;
     img.onerror = function() {
@@ -293,14 +330,15 @@ document.addEventListener('DOMContentLoaded', () => {
   // reveal a VPN or proxy. Compared by current UTC offset, so neighbouring zones count as a match.
   function renderTimeZone(ipZone) {
     const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
-    const ipOffset = typeof ipZone === 'string' && ipZone.includes('/') ? zoneOffsetMinutes(ipZone) : null;
+    const ipOffset = typeof ipZone === 'string' && ipZone && ipZone !== 'N/A' ? zoneOffsetMinutes(ipZone) : null;
     const browserOffset = browserZone ? zoneOffsetMinutes(browserZone) : null;
     if (ipOffset === null || browserOffset === null) {
       v4TzRow.style.display = 'none';
       return;
     }
     const match = ipOffset === browserOffset;
-    v4Tz.innerText = match ? ipZone : `${ipZone} · your clock ${browserZone}`;
+    const readable = zone => zone.replace(/_/g, ' ');
+    v4Tz.innerText = match ? readable(ipZone) : `${readable(ipZone)} · your clock ${readable(browserZone)}`;
     v4Tz.title = match
       ? 'Your browser clock matches the time zone of this IP.'
       : 'Your browser clock is in a different time zone than this IP. Websites can compare the two, which can reveal a VPN or proxy.';
@@ -310,7 +348,14 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function renderIPv4(data, isOffline = false, probeError = false, hasResult = false) {
+    // IPv6 works but there is no IPv4: a one-line note instead of a large failure card.
+    const v6Only = !isOffline && !probeError && hasResult && !data?.ip;
+    v4Card.style.display = v6Only ? 'none' : '';
+    v4InactivePill.style.display = v6Only ? 'flex' : 'none';
+    if (v6Only) return;
     if (isOffline || !data || !data.ip) {
+      setCopyable(v4IpRow, '', 'IPv4');
+      delete v4FlagImg.dataset.code;
       v4Country.innerText = isOffline ? 'Offline' : (probeError || hasResult ? 'IPv4 unavailable' : 'Checking...');
       v4Ip.innerText = isOffline ? 'No Connection' : (probeError || hasResult ? 'Unavailable' : 'Checking network');
       v4FlagImg.src = '/assets/icons/icon48.png';
@@ -329,11 +374,19 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const resolvedCountry = getFullCountryName(data.countryCode, data.country);
+    const v4Code = realCountryCode(data.countryCode);
+    const resolvedCountry = getFullCountryName(v4Code, v4Code ? data.country : '');
     v4Country.innerText = resolvedCountry;
     v4Ip.innerText = data.ip;
+    v4Ip.title = data.ip;
+    setCopyable(v4IpRow, data.ip, 'IPv4');
 
-    if (v4TypeTag && data.connectionType && data.connectionType !== 'Unknown') {
+    if (v4TypeTag && probeError) {
+      // The providers did not answer this time: what is shown is the last verified result.
+      v4TypeTag.className = 'type-tag offline';
+      v4TypeTag.innerText = 'Last known';
+      v4TypeTag.style.display = 'inline-flex';
+    } else if (v4TypeTag && data.connectionType && data.connectionType !== 'Unknown') {
       const rawType = data.connectionType.toLowerCase();
       const typeClass = rawType.includes('data') ? 'datacenter'
         : rawType.includes('resid') ? 'residential'
@@ -347,14 +400,14 @@ document.addEventListener('DOMContentLoaded', () => {
       v4TypeTag.style.display = 'none';
     }
 
-    const locParts = [data.city, data.region].filter(Boolean);
-    const locText = locParts.length ? locParts.join(', ') : (resolvedCountry && resolvedCountry !== 'Unknown Country' ? resolvedCountry : 'Location unavailable');
+    const locText = placeText(data.city, data.region) || (v4Code ? resolvedCountry : 'Location unavailable');
     v4CityRegion.innerText = locText;
     v4CityRegion.title = locText;
 
-    if (/^[a-z]{2}$/i.test(data.countryCode || '')) {
-      setPopupFlag(v4FlagImg, v4Watermark, data.countryCode.toLowerCase());
+    if (v4Code) {
+      setPopupFlag(v4FlagImg, v4Watermark, v4Code.toLowerCase());
     } else {
+      delete v4FlagImg.dataset.code;
       v4FlagImg.src = '/assets/icons/icon48.png';
       v4Watermark.src = '';
     }
@@ -380,21 +433,31 @@ document.addEventListener('DOMContentLoaded', () => {
     renderTimeZone(data.timezone);
   }
 
-  function renderIPv6(data, isOffline = false) {
+  function renderIPv6(data, isOffline = false, checking = false, probeError = false) {
     if (isOffline || !data || !data.ip) {
       v6ActiveCard.style.display = 'none';
       v6InactivePill.style.display = 'flex';
+      v6PillMsg.innerText = isOffline ? 'Offline' : checking ? 'Checking…' : 'Not detected on current network';
+      v6InactivePill.title = isOffline ? 'No network connection' : checking ? 'Checking for IPv6' : 'No IPv6 address detected on this network';
+      setCopyable(v6IpRow, '', 'IPv6');
       return;
     }
 
     v6InactivePill.style.display = 'none';
     v6ActiveCard.style.display = 'block';
 
-    const resolvedCountry = getFullCountryName(data.countryCode, data.country);
+    const v6Code = realCountryCode(data.countryCode);
+    const resolvedCountry = getFullCountryName(v6Code, v6Code ? data.country : '');
     v6Country.innerText = resolvedCountry;
     v6Ip.innerText = data.ip;
+    v6Ip.title = data.ip; // long addresses are shortened with an ellipsis
+    setCopyable(v6IpRow, data.ip, 'IPv6');
 
-    if (v6TypeTag && data.connectionType && data.connectionType !== 'Unknown') {
+    if (v6TypeTag && probeError) {
+      v6TypeTag.className = 'type-tag offline';
+      v6TypeTag.innerText = 'Last known';
+      v6TypeTag.style.display = 'inline-flex';
+    } else if (v6TypeTag && data.connectionType && data.connectionType !== 'Unknown') {
       const rawType = data.connectionType.toLowerCase();
       const typeClass = rawType.includes('data') ? 'datacenter'
         : rawType.includes('resid') ? 'residential'
@@ -408,14 +471,14 @@ document.addEventListener('DOMContentLoaded', () => {
       v6TypeTag.style.display = 'none';
     }
 
-    const locParts = [data.city, data.region].filter(Boolean);
-    const locText = locParts.length ? locParts.join(', ') : (resolvedCountry && resolvedCountry !== 'Unknown Country' ? resolvedCountry : 'Location unavailable');
+    const locText = placeText(data.city, data.region) || (v6Code ? resolvedCountry : 'Location unavailable');
     v6CityRegion.innerText = locText;
     v6CityRegion.title = locText;
 
-    if (/^[a-z]{2}$/i.test(data.countryCode || '')) {
-      setPopupFlag(v6FlagImg, v6Watermark, data.countryCode.toLowerCase());
+    if (v6Code) {
+      setPopupFlag(v6FlagImg, v6Watermark, v6Code.toLowerCase());
     } else {
+      delete v6FlagImg.dataset.code;
       v6FlagImg.src = '/assets/icons/icon48.png';
       v6Watermark.src = '';
     }
@@ -459,7 +522,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ipEl.className = 'ip';
       ipEl.textContent = ip;
       el.append(src, ipEl);
-      const code = /^[a-z]{2}$/i.test(info?.countryCode || '') ? info.countryCode.toLowerCase() : '';
+      const code = realCountryCode(info?.countryCode).toLowerCase();
       if (code) {
         const img = document.createElement('img');
         img.alt = '';
@@ -485,8 +548,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function checkSplitRouting(v4, v6) {
     if (!splitBadge) return;
-    if (v4 && v6 && v4.countryCode && v6.countryCode &&
-        v4.countryCode.toUpperCase() !== v6.countryCode.toUpperCase()) {
+    if (v4 && v6 && realCountryCode(v4.countryCode) && realCountryCode(v6.countryCode) &&
+        realCountryCode(v4.countryCode) !== realCountryCode(v6.countryCode)) {
       splitBadge.title = `Split Route Detected!\nIPv4: ${v4.country} (${v4.countryCode})\nIPv6: ${v6.country} (${v6.countryCode})`;
       splitBadge.style.display = 'inline-flex';
     } else {
@@ -530,10 +593,16 @@ document.addEventListener('DOMContentLoaded', () => {
     return true;
   }
 
+  function canonicalIp(ip) {
+    const s = (ip || '').trim().toLowerCase();
+    if (!s.includes(':')) return s;
+    try { return new URL(`http://[${s}]/`).hostname.slice(1, -1); } catch (e) { return s; }
+  }
+
   function probeWebRTCLeaks(v4Data, v6Data) {
     return new Promise((resolve) => {
-      const activeV4 = (v4Data?.ip || '').trim().toLowerCase();
-      const activeV6 = (v6Data?.ip || '').trim().toLowerCase();
+      const activeV4 = canonicalIp(v4Data?.ip);
+      const activeV6 = canonicalIp(v6Data?.ip);
 
       if (!activeV4 && !activeV6) {
         return resolve({ leaked: false, verified: false, leakedIPs: [], allIPs: [] });
@@ -555,7 +624,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const candidateList = Array.from(discoveredIPs);
 
         const leaked = candidateList.filter(ip => {
-          const norm = ip.trim().toLowerCase();
+          const norm = canonicalIp(ip);
           return norm !== activeV4 && norm !== activeV6;
         });
 
@@ -615,7 +684,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function runSecurityAudit(v4Info, v6Info, settings, shieldEffective) {
+  function runSecurityAudit(v4Info, v6Info, settings, shieldEffective, unverified = false) {
     if (!securityBar) return;
     const enableWebRtc = !settings || settings.enableWebRtcScan !== false;
     if (!enableWebRtc) {
@@ -643,6 +712,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     document.documentElement.dataset.leakhaloShield = 'disabled';
+    if (unverified) {
+      setWebRTCState('unknown');
+      return;
+    }
     setWebRTCState('probing');
 
     probeWebRTCLeaks(v4Info, v6Info).then((res) => {
@@ -658,11 +731,14 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Map links off: the place name stays; only the link and its pin go.
   function applySettings(settings) {
     if (!settings) return;
     const showMap = settings.showMap !== false;
-    v4MapBtn.style.display = showMap ? 'inline-flex' : 'none';
-    v6MapBtn.style.display = showMap ? 'inline-flex' : 'none';
+    for (const link of [v4MapBtn, v6MapBtn]) {
+      link.classList.toggle('no-map', !showMap);
+      if (!showMap) link.removeAttribute('href');
+    }
   }
 
   function normalizeVal(val) {
@@ -720,10 +796,6 @@ document.addEventListener('DOMContentLoaded', () => {
       lastRenderedFingerprint = currentFingerprint;
       hasRenderedOnce = true;
 
-      if (res.appSettings) {
-        applySettings(res.appSettings);
-      }
-
       const isOffline = res.isOffline === true;
       const pulseDot = document.querySelector('.pulse-dot');
       const subbarLabel = document.querySelector('.subbar-label');
@@ -746,7 +818,9 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       renderIPv4(res.latestV4Info || null, isOffline, res.probeError === true, !!res.latestV6Info);
-      renderIPv6(res.latestV6Info || null, isOffline);
+      const checking = !isOffline && !res.probeError && !res.latestV4Info && !res.latestV6Info;
+      renderIPv6(res.latestV6Info || null, isOffline, checking, res.probeError === true);
+      if (res.appSettings) applySettings(res.appSettings);
       checkSplitRouting(isOffline || res.probeError ? null : res.latestV4Info,
         isOffline || res.probeError ? null : res.latestV6Info);
       // The split-route card is opt-in (Settings); detection still keeps the main IP stable.
@@ -756,7 +830,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const isShieldActive = res.appSettings ? res.appSettings.enableAntiLeakShield !== false : true;
       setShieldState(isShieldActive ? (res.shieldEffective ? SHIELD_STATES.ON : SHIELD_STATES.ERROR) : SHIELD_STATES.OFF);
 
-      runSecurityAudit(res.latestV4Info, res.latestV6Info, res.appSettings, res.shieldEffective);
+      // Without a fresh, verified public IP a WebRTC candidate cannot be judged as a leak.
+      const unverified = isOffline || res.probeError === true || res.v4Unverified === true;
+      runSecurityAudit(res.latestV4Info, res.latestV6Info, res.appSettings, res.shieldEffective, unverified);
 
       updateTimestamp(res.lastCheckedAt || res.latestV4Info?.updatedAt || res.latestV6Info?.updatedAt);
 

@@ -72,10 +72,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setStatus('Saving…', 'saving');
     saveChain = saveChain.catch(() => {}).then(async () => {
       try {
-        const { appSettings } = await chrome.storage.local.get('appSettings');
-        const next = { ...(appSettings || {}), [key]: value };
-        await chrome.storage.local.set({ appSettings: next });
-        const response = await chrome.runtime.sendMessage({ type: 'SETTINGS_UPDATED' });
+        const response = await chrome.runtime.sendMessage({ type: 'UPDATE_SETTINGS', patch: { [key]: value } });
         if (response?.status !== 'ok') throw new Error('Browser setting update failed');
         setStatus('Saved in this browser');
       } catch (error) {

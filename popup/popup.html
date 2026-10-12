@@ -24,19 +24,19 @@
       </span>
     </div>
     <div class="header-actions">
-      <button id="refreshBtn" class="ghost-btn" title="Refresh network status">
+      <button id="refreshBtn" class="ghost-btn" title="Refresh network status" aria-label="Check again now">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <polyline points="23 4 23 10 17 10"></polyline>
           <polyline points="1 20 1 14 7 14"></polyline>
           <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
         </svg>
       </button>
-      <button id="shieldToggleBtn" class="ghost-btn shield-btn" title="Anti-Leak Armor (WebRTC Protection) • Click to toggle">
+      <button id="shieldToggleBtn" class="ghost-btn shield-btn" title="Anti-Leak Armor (WebRTC Protection) • Click to toggle" aria-label="WebRTC Armor" aria-pressed="true">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
         </svg>
       </button>
-      <button id="settingsToggleBtn" class="ghost-btn" title="Extension Settings">
+      <button id="settingsToggleBtn" class="ghost-btn" title="Extension Settings" aria-label="Open settings">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" shape-rendering="geometricPrecision">
           <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path>
           <circle cx="12" cy="12" r="3"></circle>
@@ -60,6 +60,13 @@
 
   <main id="content" class="main-stack" style="display: none;">
 
+    <div id="v4InactivePill" class="compact-pill" style="display: none;" title="No IPv4 address detected on this network">
+      <div class="pill-left">
+        <span class="protocol-tag muted">IPv4</span>
+        <span class="pill-msg">Not detected on current network</span>
+      </div>
+    </div>
+
     <section class="card hero-card" id="v4Card">
 
       <img id="v4Watermark" class="flag-watermark" src="" alt="">
@@ -75,7 +82,7 @@
             <span id="v4TypeTag" class="type-tag" style="display: none;">-</span>
           </div>
           <div class="location-wrapper">
-            <a id="v4MapBtn" class="location-link" target="_blank" rel="noopener noreferrer" title="Open approximate location in OpenStreetMap" aria-label="Open approximate location in OpenStreetMap">
+            <a id="v4MapBtn" class="location-link" target="_blank" rel="noopener noreferrer" title="Open approximate location in OpenStreetMap">
               <svg class="location-pin" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
                 <circle cx="12" cy="10" r="3"></circle>
@@ -86,10 +93,10 @@
         </div>
       </div>
 
-      <div id="v4IpRow" class="ip-hero-row" title="Click to copy IP address" tabindex="0" role="button" aria-label="Copy IPv4 Address">
+      <div id="v4IpRow" class="ip-hero-row" title="Click to copy IP address" tabindex="0" role="button" aria-describedby="v4CopyHint">
         <span id="v4Ip" class="ip-mono">0.0.0.0</span>
         <div class="copy-action">
-          <span id="v4CopyStatus" class="copy-feedback">Copy</span>
+          <span id="v4CopyStatus" class="copy-feedback">Copy</span><span id="v4CopyHint" class="visually-hidden">Press to copy this address</span>
           <svg class="copy-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
             <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -137,7 +144,7 @@
               <span id="v6TypeTag" class="type-tag" style="display: none;">-</span>
             </div>
             <div class="location-wrapper">
-              <a id="v6MapBtn" class="location-link" target="_blank" rel="noopener noreferrer" title="Open approximate location in OpenStreetMap" aria-label="Open approximate location in OpenStreetMap">
+              <a id="v6MapBtn" class="location-link" target="_blank" rel="noopener noreferrer" title="Open approximate location in OpenStreetMap">
                 <svg class="location-pin" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
                   <circle cx="12" cy="10" r="3"></circle>
@@ -148,10 +155,10 @@
           </div>
         </div>
 
-        <div id="v6IpRow" class="ip-hero-row" title="Click to copy IP address" tabindex="0" role="button" aria-label="Copy IPv6 Address">
+        <div id="v6IpRow" class="ip-hero-row" title="Click to copy IP address" tabindex="0" role="button" aria-describedby="v6CopyHint">
           <span id="v6Ip" class="ip-mono font-compact">0:0:0:0:0</span>
           <div class="copy-action">
-            <span id="v6CopyStatus" class="copy-feedback">Copy</span>
+            <span id="v6CopyStatus" class="copy-feedback">Copy</span><span id="v6CopyHint" class="visually-hidden">Press to copy this address</span>
             <svg class="copy-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
               <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
@@ -170,7 +177,7 @@
       <div id="v6InactivePill" class="compact-pill" title="No IPv6 address detected on this network">
         <div class="pill-left">
           <span class="protocol-tag muted">IPv6</span>
-          <span class="pill-msg">Not detected on current network</span>
+          <span class="pill-msg" id="v6PillMsg">Not detected on current network</span>
         </div>
       </div>
     </div>
