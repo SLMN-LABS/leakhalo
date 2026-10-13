@@ -426,6 +426,18 @@ kex=X25519
     }
   });
 
+  test('Settings page theme is optional, saved, and applied before first paint', () => {
+    const themeJs = fs.readFileSync(path.join(ROOT, 'options/theme.js'), 'utf8');
+    const optionsCss = fs.readFileSync(path.join(ROOT, 'options/options.css'), 'utf8');
+    assert(optionsHtml.indexOf('<script src="theme.js"></script>') < optionsHtml.indexOf('</head>'), 'theme.js must load in <head>');
+    for (const v of ['light', 'dark', 'system']) assert(optionsHtml.includes(`name="optionsTheme" value="${v}"`), `missing ${v} theme choice`);
+    assert(/value="light" checked/.test(optionsHtml), 'light must stay the default');
+    assert(optionsJs.includes("queueSave('optionsTheme'"), 'theme choice must be saved through UPDATE_SETTINGS');
+    assert(themeJs.includes('prefers-color-scheme: dark') && themeJs.includes("addEventListener('change'"), 'system theme must follow the OS');
+    assert(optionsCss.includes(':root[data-theme="dark"] {'), 'missing dark palette');
+    assert(fs.existsSync(path.join(ROOT, 'assets/brand/wordmark-dark.png')), 'missing dark wordmark');
+  });
+
   console.log('\n🎨 [6/6] Assets & National Flags Validation:');
 
   test('All 244 ISO country flag PNG assets are valid files', () => {

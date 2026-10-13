@@ -4,6 +4,7 @@
 
 A review release: fixes from a full code and interface review of 1.0.2.
 
+- The Settings page has an optional dark theme: choose Light, Dark or System under Appearance.
 - Settings changed on two pages at the same time can no longer undo each other.
 - IP change alerts are more reliable:
   - IPv4 and IPv6 changes in the same moment both arrive.

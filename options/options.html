@@ -6,6 +6,7 @@
   <title>LeakHalo Settings</title>
   <link rel="icon" type="image/png" href="../assets/icons/icon16.png">
   <link rel="stylesheet" href="options.css">
+  <script src="theme.js"></script>
 </head>
 <body>
   <div class="app-shell">
@@ -199,6 +200,18 @@
               </label>
             </div>
           </fieldset>
+
+          <div class="setting-row select-row theme-row">
+            <span class="setting-copy" id="themeLabel">
+              <span class="setting-title">Settings page theme</span>
+              <span class="setting-description">Applies to this page only. The popup always uses its dark design.</span>
+            </span>
+            <span class="theme-switch" role="radiogroup" aria-labelledby="themeLabel">
+              <label><input type="radio" name="optionsTheme" value="light" checked><span>Light</span></label>
+              <label><input type="radio" name="optionsTheme" value="dark"><span>Dark</span></label>
+              <label><input type="radio" name="optionsTheme" value="system"><span>System</span></label>
+            </span>
+          </div>
 
           <label class="setting-row map-row">
             <span class="setting-copy">

@@ -255,6 +255,63 @@ select:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid 
 .about-link:hover { border-color: #9bcfc6; background: #f2faf8; }
 .about-link .about-copy strong { color: var(--accent); }
 .external-icon { width: 14px; height: 14px; flex: none; margin-left: auto; color: var(--accent); }
+.theme-switch { display: inline-flex; gap: 3px; padding: 3px; border: 1px solid #cddce0; border-radius: 10px; background: #f3f7f8; }
+.theme-switch label { position: relative; cursor: pointer; }
+.theme-switch input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.theme-switch span { display: block; min-width: 72px; padding: 7px 12px; border-radius: 7px; color: var(--muted); font-size: 12px; font-weight: 700; text-align: center; transition: background .15s, color .15s; }
+.theme-switch label:hover span { color: var(--ink); }
+.theme-switch input:checked + span { background: var(--surface); color: var(--accent); box-shadow: 0 1px 4px #142e3b24; }
+.theme-switch input:focus-visible + span { outline: 3px solid #72cfc2; outline-offset: 1px; }
+
+/* Dark theme, chosen in Appearance (theme.js sets data-theme before the first paint). */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #0a141d;
+  --surface: #111e29;
+  --ink: #e2ecf0;
+  --muted: #94a9b3;
+  --line: #213442;
+  --accent: #3cc6b5;
+  --accent-soft: #123430;
+  --navy: #eef5f7;
+  --danger: #ff8f86;
+}
+:root[data-theme="dark"] .save-status { background: #12302c; color: #6fd8c8; }
+:root[data-theme="dark"] .save-status[data-state="saving"] { background: #1a2836; color: #a3b5c4; }
+:root[data-theme="dark"] .save-status[data-state="error"] { background: #3a1d1d; color: var(--danger); }
+:root[data-theme="dark"] .nav-label { color: #6f8590; }
+:root[data-theme="dark"] .nav-indicator { background: #143a35; box-shadow: 0 5px 13px #0006; }
+:root[data-theme="dark"] .nav-item { color: #9db0b9; }
+:root[data-theme="dark"] .nav-item:not(.active):hover { background: #16252f; color: var(--ink); }
+:root[data-theme="dark"] .nav-item.active { color: #c9f3ec; }
+:root[data-theme="dark"] .nav-number { color: #6c818b; }
+:root[data-theme="dark"] .nav-item.active .nav-number { color: var(--accent); }
+:root[data-theme="dark"] .sidebar-note { color: #8399a3; }
+:root[data-theme="dark"] .section-card { box-shadow: 0 10px 28px #00000033; }
+:root[data-theme="dark"] .setting-row { border-top-color: #1c2d3a; }
+:root[data-theme="dark"] .setting-row.featured-row { border-color: #1f4a43; background: linear-gradient(110deg, #10302c, #112129); }
+:root[data-theme="dark"] .leak-links a { border-color: #28434c; }
+:root[data-theme="dark"] .leak-links a:hover, :root[data-theme="dark"] .leak-links a:focus-visible { border-color: var(--accent); background: #12302c; }
+:root[data-theme="dark"] select { border-color: #2a3f4d; background: #0d1922; }
+:root[data-theme="dark"] .switch-track { background: #3a4d59; }
+:root[data-theme="dark"] .switch input:checked + .switch-track { background: #1f9e8f; }
+:root[data-theme="dark"] .radio-card { border-color: #223744; background: #0e1a24; }
+:root[data-theme="dark"] .radio-card:hover { border-color: #3c7f76; }
+:root[data-theme="dark"] .radio-card:has(input:checked) { border-color: #36a898; background: #10302c; box-shadow: inset 0 0 0 1px #36a898; }
+:root[data-theme="dark"] .radio-card input { border-color: #5f7f86; background: #0e1a24; }
+:root[data-theme="dark"] .radio-card input:checked { border-color: var(--accent); box-shadow: inset 0 0 0 4px #0e1a24; background: var(--accent); }
+:root[data-theme="dark"] .toolbar-preview { border-color: #2a3e4b; background: linear-gradient(180deg, #1a2834, #13202a); box-shadow: none; }
+:root[data-theme="dark"] .preview-dots i { background: #4c606c; }
+:root[data-theme="dark"] .preview-address { border-color: #2b3d49; background: #0f1b24; }
+:root[data-theme="dark"] .preview-extension { border-color: #2f4350; background: #1d2c38; }
+:root[data-theme="dark"] .preview-note { color: #9cb0b9; }
+:root[data-theme="dark"] .popup-preview { border-color: #2c3c52; box-shadow: none; }
+:root[data-theme="dark"] .theme-switch { border-color: #2a3f4d; background: #0d1922; }
+:root[data-theme="dark"] .theme-switch input:checked + span { background: #1b2d3a; box-shadow: 0 1px 4px #0008; }
+:root[data-theme="dark"] .about-wordmark { content: url("../assets/brand/wordmark-dark.png"); }
+:root[data-theme="dark"] .about-info { border-color: #213442; background: #0e1a24; }
+:root[data-theme="dark"] .about-link:hover { border-color: #2f6a62; background: #10302c; }
+
 @media (max-width: 900px) {
   .layout { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .sidebar { position: static; padding-top: 22px; }
@@ -271,6 +328,9 @@ select:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid 
   .setting-description { font-size: 12px; }
   .select-row { grid-template-columns: 1fr; gap: 9px; }
   select { width: 100%; }
+  .theme-switch { display: flex; }
+  .theme-switch label { flex: 1; }
+  .theme-switch span { min-width: 0; }
   .option-group { grid-template-columns: 1fr; }
   .radio-card { min-height: 0; }
   .about-grid { grid-template-columns: 1fr; }

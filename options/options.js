@@ -13,6 +13,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const setDnsPrefetchBlock = document.getElementById('setDnsPrefetchBlock');
   const setWebRtcScan = document.getElementById('setWebRtcScan');
   const badgeRadios = [...document.getElementsByName('badgeMode')];
+  const themeRadios = [...document.getElementsByName('optionsTheme')];
   const navItems = [...document.querySelectorAll('.nav-item')];
   const navMenu = document.querySelector('.nav-menu');
   const navIndicator = document.querySelector('.nav-indicator');
@@ -63,6 +64,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!skipPending || !pendingCounts.has('badgeMode')) {
       const badgeMode = ['flag', 'text', 'off'].includes(settings.badgeMode) ? settings.badgeMode : 'flag';
       for (const radio of badgeRadios) radio.checked = radio.value === badgeMode;
+    }
+    if (!skipPending || !pendingCounts.has('optionsTheme')) {
+      const theme = ['light', 'dark', 'system'].includes(settings.optionsTheme) ? settings.optionsTheme : 'light';
+      for (const radio of themeRadios) radio.checked = radio.value === theme;
+      window.leakHaloTheme?.apply(theme);
     }
     setPolicyAvailability();
   }
@@ -201,6 +207,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   for (const radio of badgeRadios) {
     radio.addEventListener('change', () => {
       if (radio.checked) queueSave('badgeMode', radio.value);
+    });
+  }
+  for (const radio of themeRadios) {
+    radio.addEventListener('change', () => {
+      if (!radio.checked) return;
+      window.leakHaloTheme?.apply(radio.value);
+      queueSave('optionsTheme', radio.value);
     });
   }
 
