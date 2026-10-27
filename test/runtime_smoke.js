@@ -60,7 +60,8 @@ const chrome = {
       if (toolbarGetGate && names.includes('routeDivergence')) { const gate = toolbarGetGate; toolbarGetGate = null; return gate.then(() => found); }
       return Promise.resolve(found);
     },
-    async set(values) { Object.assign(data, values); }
+    async set(values) { Object.assign(data, values); },
+    async remove(keys) { for (const key of [].concat(keys)) delete data[key]; }
   } },
   action: {
     setIcon: async (icon) => { toolbar.icon = icon; }, setBadgeText: async ({ text }) => { toolbar.badge = text; },
@@ -735,6 +736,22 @@ async function main() {
     data.lastNotifTimeIPv4 = 0;
     await vm.runInContext('deliverIPChangeNotification("IPv4", "203.0.113.5", { ip: "203.0.113.6", countryCode: "IR", country: "Iran" })', context);
     assert.match(notifications.at(-1).title, /IPv4 IP Changed \(IR\)/, 'same country: the routine alert');
+  }
+
+  // "Clear data" removes every stored address and route detail but keeps the settings.
+  {
+    const settingsBefore = JSON.stringify(data.appSettings);
+    data.appSettings.enableAutoRefresh = false; // no fresh check, so the result stays empty
+    data.routeDivergence = { primaryIp: '203.0.113.1', alts: [] };
+    data.announcedCountries = { IPv4: 'DE' };
+    await vm.runInContext('clearStoredIpData()', context);
+    for (const key of ['latestV4Info', 'latestV6Info', 'routeState', 'routeDivergence', 'announcedCountries', 'lastKnownV6Ip', 'fastChannelIp']) {
+      assert.equal(data[key], undefined, `${key} cleared`);
+    }
+    data.appSettings.enableAutoRefresh = true;
+    assert.equal(JSON.stringify(data.appSettings), settingsBefore, 'settings are kept');
+    await vm.runInContext('fetchAllBackgroundLocations(true)', context);
+    assert.ok(data.latestV4Info?.ip, 'a later check fills it again');
   }
 
   networkMode = 'failed';

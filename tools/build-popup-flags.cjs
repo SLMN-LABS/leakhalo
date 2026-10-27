@@ -5,17 +5,17 @@
 //   npm pack flag-icons@7.5.0 && tar xzf flag-icons-7.5.0.tgz
 //   node tools/build-popup-flags.cjs package/flags/4x3
 //
-// Needs playwright-core (npm install) and a Chromium build (npx playwright-core install chromium).
+// Needs playwright-core and a Chromium build (the halo film's node_modules has both).
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const root = path.resolve(__dirname, '..');
-const req = m => require(m); // npm install (devDependencies) provides playwright-core
+const req = m => { try { return require(m); } catch { return require(path.join(root, 'marketing/halo-film/node_modules', m)); } };
 const { chromium } = req('playwright-core');
 
 const svgDir = path.resolve(process.argv[2] || '');
 if (!fs.existsSync(path.join(svgDir, 'de.svg'))) { console.error('usage: node tools/build-popup-flags.cjs <flag-icons>/flags/4x3'); process.exit(1); }
 const outDir = path.join(root, 'assets/flags-rect');
 const W = 96, H = 72;
-const ALIAS = { ct: 'es-ct' }; // assets/flags uses "ct" for Catalonia (see ASSET_ATTRIBUTION.md)
+const ALIAS = {};
 
 (async () => {
   const codes = fs.readdirSync(path.join(root, 'assets/flags')).map(f => /^flag-([a-z]{2})\.png$/.exec(f)).filter(Boolean).map(m => m[1]).sort();

@@ -249,6 +249,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   else queueNavUpdate();
   requestAnimationFrame(() => requestAnimationFrame(() => navMenu?.classList.add('indicator-ready')));
 
+  const clearIpData = document.getElementById('clearIpData');
+  clearIpData.addEventListener('click', async () => {
+    clearIpData.disabled = true;
+    setStatus('Clearing…', 'saving');
+    try {
+      const response = await chrome.runtime.sendMessage({ type: 'CLEAR_IP_DATA' });
+      if (response?.status !== 'ok') throw new Error('Clearing failed');
+      setStatus('Stored IP data cleared');
+    } catch (error) {
+      setStatus('Could not clear data', 'error');
+    } finally {
+      clearIpData.disabled = false;
+    }
+  });
+
   // Listeners first, so a change made while the stored settings load is neither lost nor undone.
   for (const [key, control] of Object.entries(fields)) {
     control.addEventListener('change', () => {

@@ -583,6 +583,12 @@ async function launch({ mocked, port }) {
     await sleep(3_000);
     assert((await notes()).length === before, 'notified although notifications are off');
     await opt.check('#setNotifications', { force: true });
+    // "Clear data": the stored addresses go, a fresh check refills them, the settings stay.
+    const keep = (await storage(['appSettings'])).appSettings;
+    await opt.click('#clearIpData');
+    await opt.waitForFunction(() => document.getElementById('saveToast').textContent === 'Stored IP data cleared', null, { timeout: 8_000 });
+    await waitFor(async () => (await storage(['latestV4Info'])).latestV4Info?.ip === NL, 15_000, 'fresh check after clearing');
+    assert(JSON.stringify((await storage(['appSettings'])).appSettings) === JSON.stringify(keep), 'settings changed by clearing');
     await opt.close();
   });
 

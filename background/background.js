@@ -1530,6 +1530,22 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === PROBE_ALARM) autoRefresh().catch(() => {});
 });
 
+// Everything LeakHalo has stored about your addresses and routes, without your settings. A fresh
+// check follows (when automatic checks are on), so the popup and toolbar fill again.
+const IP_DATA_KEYS = ['latestV4Info', 'latestV6Info', 'routeState', 'routeDivergence', 'pendingV6Notice', 'lastKnownV6Ip',
+  'fastChannelIp', 'announcedCountries', 'lastNotifTimeIPv4', 'lastNotifTimeIPv6', 'lastRouteNotifTime', 'providerCooldowns',
+  'isOffline', 'probeError', 'v4Unverified', 'lastCheckedAt', 'lastProbeAt'];
+async function clearStoredIpData() {
+  probeGeneration++; // a check still running must not write its result back
+  await chrome.storage.local.remove(IP_DATA_KEYS);
+  await chrome.storage.session?.clear().catch(() => {});
+  geoMemoryCache.clear();
+  for (const key of Object.keys(providerCooldowns)) delete providerCooldowns[key];
+  appliedToolbarKey = '';
+  await updateToolbarDisplay(null, null, false, false);
+  if (await autoChecksEnabled()) fetchAllBackgroundLocations(true).catch(() => {});
+}
+
 // The settings pages may change, with their allowed values. Anything else in a patch is ignored.
 const BOOLEAN_SETTINGS = ['enableNotifications', 'notifyIPv6', 'enableAutoRefresh', 'enableFastDetection', 'warnRouteDivergence',
   'showMap', 'enableAntiLeakShield', 'enableDnsPrefetchBlock', 'enableWebRtcScan', 'showTimeZone', 'maskIp'];
@@ -1592,6 +1608,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       .catch(() => sendResponse({ status: 'error' }));
     return true;
   }
+  if (request.type === 'CLEAR_IP_DATA') {
+    clearStoredIpData().then(() => sendResponse({ status: 'ok' })).catch(() => sendResponse({ status: 'error' }));
+    return true;
+  }
   if (request.type === 'REFRESH_NOW') {
     fetchAllBackgroundLocations(true).then((data) => sendResponse({ status: 'ok', data })).catch(() => sendResponse({ status: 'error' }));
     return true;
@@ -1631,11 +1651,24 @@ if (typeof self !== 'undefined' && typeof self.addEventListener === 'function') 
     fastChannel.retryTimer = null;
     syncFastChannel().catch(() => {});
     resetOfflineRetry();
-    autoChecksEnabled().then(on => on && fetchAllBackgroundLocations(true)).catch(() => {});
+    autoChecksEnabled().then(async (on) => {
+      if (on) return fetchAllBackgroundLocations(true);
+      const res = await chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline']);
+      if (res.isOffline !== true) return;
+      await chrome.storage.local.set({ isOffline: false });
+      await updateToolbarDisplay(res.latestV4Info || null, res.latestV6Info || null, false, false);
+    }).catch(() => {});
   });
   // Lost the network: show it in the toolbar at once (the check makes no requests while offline).
+  // With automatic checks off, the lost connection is still shown (a local fact, no requests) and
+  // cleared again when it returns, so the grey icon never outlives the outage.
   self.addEventListener('offline', () => {
-    autoChecksEnabled().then(on => on && fetchAllBackgroundLocations(true)).catch(() => {});
+    autoChecksEnabled().then(async (on) => {
+      if (on) return fetchAllBackgroundLocations(true);
+      const res = await chrome.storage.local.get(['latestV4Info', 'latestV6Info']);
+      await chrome.storage.local.set({ isOffline: true, probeError: false });
+      await updateToolbarDisplay(res.latestV4Info || null, res.latestV6Info || null, true, false);
+    }).catch(() => {});
   });
 }
 

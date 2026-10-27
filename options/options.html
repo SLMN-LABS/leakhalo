@@ -105,6 +105,14 @@
               <a href="https://coveryourtracks.eff.org/" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Browser fingerprint</a>
             </span>
           </div>
+
+          <div class="setting-row clear-data-row">
+            <span class="setting-copy">
+              <span class="setting-title" id="clearDataTitle">Stored IP data</span>
+              <span class="setting-description" id="clearDataDesc">Remove the IP addresses, locations and route details LeakHalo keeps in this browser. Your settings stay. With background checks on, a fresh check follows at once.</span>
+            </span>
+            <button type="button" id="clearIpData" class="secondary-button" aria-describedby="clearDataDesc">Clear data</button>
+          </div>
         </section>
 
         <section id="notifications" class="section-card" aria-labelledby="monitoringTitle">
@@ -119,7 +127,7 @@
           <label class="setting-row">
             <span class="setting-copy">
               <span class="setting-title" id="setAutoRefreshTitle">Background IP checks</span>
-              <span class="setting-description" id="setAutoRefreshDesc">Check about every 30 seconds while the browser runs. The browser may delay background checks. The open popup checks every 3 seconds separately.</span>
+              <span class="setting-description" id="setAutoRefreshDesc">Check about every 30 seconds while the browser runs. The browser may delay background checks. The open popup checks every few seconds separately.</span>
             </span>
             <span class="switch">
               <input type="checkbox" id="setAutoRefresh" role="switch" aria-labelledby="setAutoRefreshTitle" aria-describedby="setAutoRefreshDesc" checked>
@@ -268,6 +276,7 @@
               <svg class="external-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
             </a>
           </div>
+          <p class="about-credits">Flags from <span lang="en">square-flags</span> and <span lang="en">flag-icons</span> (MIT), icons from Lucide (ISC). <a href="https://github.com/SLMN-LABS/leakhalo/blob/main/ASSET_ATTRIBUTION.md" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer">Open-source licenses</a></p>
         </section>
       </main>
     </div>

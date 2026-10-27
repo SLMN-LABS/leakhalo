@@ -706,7 +706,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const balanced = settings?.antiLeakPolicy === 'default_public_interface_only';
     // Re-checked only when something that affects WebRTC changed (not for a finished location
     // lookup or an appearance setting), so a running check is not cut short.
-    const signature = [canonicalIp(v4Info?.ip), canonicalIp(v6Info?.ip), enableWebRtc, isArmorOn, balanced, shieldEffective === true, unverified].join('|');
+    const signature = [canonicalIp(v4Info?.ip), canonicalIp(v6Info?.ip), enableWebRtc, isArmorOn, balanced, shieldEffective === true, unverified, maskIps].join('|');
     if (!force && signature === lastAuditSignature) return;
     lastAuditSignature = signature;
 

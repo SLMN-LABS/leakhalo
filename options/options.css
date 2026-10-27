@@ -255,6 +255,13 @@ select:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid 
 .map-row:has(#setShowMap:not(:checked)) .popup-preview-link { display: none; }
 .map-row:has(#setShowMap:not(:checked)) .popup-preview-hidden { display: block; }
 .about-card { padding-bottom: 25px; }
+.about-credits { margin: 14px 0 0; color: var(--muted); font-size: 12px; text-align: center; }
+.about-credits a { color: var(--accent); }
+.setting-row.clear-data-row { cursor: default; }
+.secondary-button { min-height: 38px; padding: 8px 16px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--ink); font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.secondary-button:hover { border-color: var(--accent); }
+.secondary-button:focus-visible { outline: 3px solid #72cfc2; outline-offset: 3px; }
+.secondary-button:disabled { opacity: .6; cursor: default; }
 .about-card .section-heading { margin-bottom: 4px; }
 .about-tagline { margin: -7px 0 17px; color: var(--muted); font-size: 12px; text-align: center; }
 .about-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }

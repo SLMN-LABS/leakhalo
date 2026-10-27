@@ -459,9 +459,7 @@ kex=X25519
     const rectDir = path.join(ROOT, 'assets/flags-rect');
     assert(fs.existsSync(path.join(rectDir, 'LICENSE-flag-icons.md')), 'flags-rect license notice missing');
     const squares = fs.readdirSync(path.join(ROOT, 'assets/flags')).filter(f => /^flag-[a-z]{2}\.png$/.test(f));
-    const noRectSource = ['flag-an.png'];
     for (const f of squares) {
-      if (noRectSource.includes(f)) continue;
       const file = path.join(rectDir, f);
       assert(fs.existsSync(file), `Rectangular popup flag ${f} is missing`);
       const png = fs.readFileSync(file);
@@ -470,6 +468,16 @@ kex=X25519
     const popupJs = fs.readFileSync(path.join(ROOT, 'popup/popup.js'), 'utf8');
     assert(popupJs.includes('/assets/flags-rect/flag-${code}.png'), 'popup must load rectangular flags');
     assert(popupJs.includes('/assets/flags/flag-${code}.png'), 'popup must fall back to the square flag');
+  });
+
+  test('Every ISO country and territory code has both flags, with no unused ones', () => {
+    const sq = fs.readdirSync(path.join(ROOT, 'assets/flags')).filter(f => f.endsWith('.png')).sort();
+    const rect = fs.readdirSync(path.join(ROOT, 'assets/flags-rect')).filter(f => f.endsWith('.png')).sort();
+    assert.deepStrictEqual(sq, rect, 'the toolbar and popup flag sets must cover the same codes');
+    for (const code of ['xk', 'gf', 'gp', 'io', 'bq', 'pm', 'sj', 'um', 'bv', 'hm', 'ps', 'ir']) {
+      assert(sq.includes(`flag-${code}.png`), `flag-${code}.png missing`);
+    }
+    for (const code of ['eu', 'an', 'ct']) assert(!sq.includes(`flag-${code}.png`), `flag-${code}.png is never shown`);
   });
 
   test('Country code PS is labelled "Palestine" in popup and notifications', () => {

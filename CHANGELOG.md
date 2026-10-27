@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.1
+
+- Flags for Kosovo and nine more territories (French Guiana, Guadeloupe, British Indian Ocean Territory, Caribbean Netherlands, Saint Pierre and Miquelon, Svalbard, U.S. Outlying Islands, Bouvet Island, Heard Island). Territories that fly their sovereign state's flag show it in the toolbar and the popup alike.
+- Settings → Privacy → "Clear data" removes the IP addresses, locations and route details LeakHalo keeps; your settings stay.
+- The About card links the open-source licenses.
+- Screenshot mode also hides addresses in the WebRTC leak tooltip.
+- With automatic checks off, losing the connection still turns the icon grey and coming back clears it, without any requests.
+- The store build allows connections only to the listed services (no local test addresses).
+
 ## 1.1.0
 
 Fixes from an independent review of 1.0.3, and four improvements.
