@@ -19,8 +19,6 @@
   --display: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, sans-serif;
   --mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", ui-monospace, monospace;
 }
-/* The page is intentionally dark in every system theme (brand surface, like the popup). */
-@media (prefers-color-scheme: dark) { :root { --bg: #040a16; } }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }
@@ -64,7 +62,7 @@ main { padding: 0 56px; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 0 0 rgba(25, 230, 193, .6); animation: live 2.4s ease-out infinite; }
 @keyframes live { 0% { box-shadow: 0 0 0 0 rgba(25, 230, 193, .55); } 70%, 100% { box-shadow: 0 0 0 12px rgba(25, 230, 193, 0); } }
 h1 { margin: 0 0 22px; font: 720 clamp(40px, 3.7vw, 64px)/1.04 var(--display); white-space: nowrap; letter-spacing: -.035em; }
-.grad { background: linear-gradient(92deg, #7dd3fc 0%, var(--mint) 75%); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.grad { display: inline-block; padding-bottom: .08em; margin-bottom: -.08em; background: linear-gradient(92deg, #7dd3fc 0%, var(--mint) 75%); -webkit-background-clip: text; background-clip: text; color: transparent; }
 
 /* ---------- live connection card ---------- */
 .connection {
@@ -87,8 +85,9 @@ h1 { margin: 0 0 22px; font: 720 clamp(40px, 3.7vw, 64px)/1.04 var(--display); w
 .ip-label { color: var(--faint); font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
 .ip { font-size: 28px; font-weight: 600; letter-spacing: .01em; color: #fff; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 40px; line-height: 40px; }
 .copy { display: inline-flex; align-items: center; gap: 8px; height: 38px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--line); background: rgba(255, 255, 255, .04); color: var(--ink); cursor: pointer; transition: background .15s, border-color .15s; }
-.copy:hover { background: rgba(255, 255, 255, .09); border-color: rgba(148, 178, 214, .3); }
+.copy:not(:disabled):hover { background: rgba(255, 255, 255, .09); border-color: rgba(148, 178, 214, .3); }
 .copy svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.copy:disabled { opacity: .45; cursor: not-allowed; }
 .copy[data-copied="true"] { color: var(--mint); border-color: rgba(25, 230, 193, .45); }
 
 .facts { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 0; margin: 14px 0 0; }
@@ -97,6 +96,8 @@ h1 { margin: 0 0 22px; font: 720 clamp(40px, 3.7vw, 64px)/1.04 var(--display); w
 .facts dt { color: var(--faint); font-size: 12px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
 .facts dd { margin: 4px 0 0; font-size: 14px; line-height: 21px; font-weight: 550; height: 42px; overflow: hidden; }
 .facts dd .sub { display: block; line-height: 21px; color: var(--muted); font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* One line for the address, so a long IPv6 never pushes its location out of view. */
+#connectionV6 { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #connectionNetwork { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .policy-label { display: inline-flex; align-items: center; gap: 8px; }
 .policy-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
@@ -161,6 +162,10 @@ h1 { margin: 0 0 22px; font: 720 clamp(40px, 3.7vw, 64px)/1.04 var(--display); w
 .pin-coach[data-pinned="true"] .coach-card { border-color: rgba(25, 230, 193, .55); }
 .pin-coach[data-pinned="true"] .status-dot { background: var(--mint); box-shadow: 0 0 8px var(--mint); }
 .pin-coach[data-pinned="true"] .pin-status { color: var(--ink); font-weight: 600; }
+/* Pinning cannot be detected in this browser: no "waiting" signal. */
+.pin-coach[data-pinned="unknown"] .status-dot { display: none; }
+/* Pinned, the coach is small, so the globe no longer needs room below it. */
+body:has(#pinCard[data-pinned="true"]) .globe-wrap { margin-top: 120px; }
 
 /* ---------- setup ---------- */
 .setup { padding: 8px 0 56px; border-top: 1px solid var(--line); }
@@ -170,7 +175,8 @@ h1 { margin: 0 0 22px; font: 720 clamp(40px, 3.7vw, 64px)/1.04 var(--display); w
 .save-status[data-state="error"] { color: var(--danger); }
 .setup-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 22px; }
 .toggle-card { display: grid; grid-template-columns: 40px 1fr auto; gap: 14px; align-items: start; padding: 18px; border-radius: 16px; background: var(--glass); border: 1px solid var(--line); cursor: pointer; transition: border-color .15s, background .15s; }
-.toggle-card:hover { border-color: rgba(148, 178, 214, .3); background: rgba(18, 32, 58, .7); }
+.toggle-card:has(input:disabled) { cursor: default; opacity: .7; }
+.toggle-card:not(:has(input:disabled)):hover { border-color: rgba(148, 178, 214, .3); background: rgba(18, 32, 58, .7); }
 .toggle-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 12px; background: rgba(56, 189, 248, .12); }
 .toggle-icon svg { width: 20px; height: 20px; fill: none; stroke: var(--sky); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .toggle-copy { display: flex; flex-direction: column; gap: 4px; }
@@ -200,6 +206,20 @@ h1 { margin: 0 0 22px; font: 720 clamp(40px, 3.7vw, 64px)/1.04 var(--display); w
   main, .topbar { padding-left: 40px; padding-right: 40px; }
   .globe-wrap { margin-top: 300px; }
   .setup-grid { grid-template-columns: 1fr; }
+}
+
+/* Narrow windows (a half-screen snap): one column, the pin coach in the page flow. */
+@media (max-width: 960px) {
+  .hero { grid-template-columns: minmax(0, 1fr); gap: 0; min-height: 0; }
+  h1 { white-space: normal; }
+  main, .topbar { padding-left: 20px; padding-right: 20px; }
+  .footer { padding-left: 20px; padding-right: 20px; flex-wrap: wrap; gap: 12px; }
+  .pin-coach { position: relative; top: auto; right: auto; width: min(360px, calc(100% - 32px)); margin: 12px auto 0; }
+  .coach-arrow { display: none; }
+  .coach-card { margin-top: 0; }
+  .globe-wrap, body:has(#pinCard[data-pinned="true"]) .globe-wrap { margin-top: 24px; width: min(80vw, 420px); min-width: 0; justify-self: center; }
+  .facts { grid-template-columns: minmax(0, 1fr); }
+  .facts > div + div { padding-left: 0; border-left: 0; border-top: 1px solid var(--line); }
 }
 
 @media (prefers-reduced-motion: reduce) {

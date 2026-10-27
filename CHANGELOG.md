@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.1.0
+
+Fixes from an independent review of 1.0.3, and four improvements.
+
+- New:
+  - A change of country gets its own alert ("Country changed: DE → IR"), apart from routine IP changes.
+  - Screenshot mode: the eye button in the popup hides most of each IP; copying still copies the full address.
+  - The time-zone row in the popup is now optional (Settings → Appearance).
+  - While the instant-detection connection is up, the open popup checks every 10 seconds instead of 3, with far fewer requests to the IP services.
+  - The store name and description are available in 13 languages.
+- More accurate:
+  - On networks with IPv6, the IPv4 check no longer waits on a failed request first, and blocked IPv6 no longer delays it.
+  - Private or local addresses are never shown as your public IP.
+  - A single missed check no longer removes the IPv4 card; "Sites see different IPs" no longer gets stuck.
+  - A failed location lookup never replaces a complete location, and is not cached.
+  - Connection types are labelled more accurately (Cloudflare WARP as a relay, mobile networks).
+  - In Balanced protection mode the popup also checks WebRTC for leaks.
+- Clearer:
+  - "Locating…" while a location is looked up, instead of "Unknown Country".
+  - Alerts carry the new country, replace each other instead of piling up, and close on click.
+  - Settings that depend on another switch are disabled while it is off; the save status stays in view.
+  - Better keyboard and screen-reader support, contrast and layout on every page; the privacy page has a dark mode.
+- Lighter: the toolbar icon is not redrawn when nothing changed; the welcome globe does far less work per frame; the alarm is removed while background checks are off.
+- Privacy: LeakHalo's server is contacted for the offline check only while Instant change detection is on; extension pages may connect only to the listed services.
+
 ## 1.0.3
 
 A review release: fixes from a full code and interface review of 1.0.2.

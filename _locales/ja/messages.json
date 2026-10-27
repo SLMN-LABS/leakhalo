@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "LeakHalo – IP と WebRTC リーク保護",
+    "description": "Extension name in the Chrome Web Store and browser."
+  },
+  "extDescription": {
+    "message": "公開 IP を確認し、WebRTC リークを検出して、オンラインのプライバシーをひと目でチェック。",
+    "description": "Short description in the Chrome Web Store."
+  }
+}

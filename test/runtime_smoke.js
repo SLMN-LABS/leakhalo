@@ -33,6 +33,7 @@ const toolbar = {};
 const PROXIED_V4 = '203.0.113.9';
 const notifications = [];
 let cloudflareLoc = 'US';
+let cloudflareV6 = false; // dual-stack: cloudflare.com answers over IPv6
 let notifyFails = false; // Chrome reports chrome.runtime.lastError for notifications.create
 
 function result(body, ok = true, status = ok ? 200 : 500, headers = {}) {
@@ -50,7 +51,7 @@ const chrome = {
     onInstalled: { addListener(listener) { installedListener = listener; } }, onStartup: event, onMessage: event
   },
   tabs: { async create(options) { createdTabs.push(options); } },
-  alarms: { get: (_name, callback) => callback({ periodInMinutes: alarmPeriod }), create(_name, info) { alarmPeriod = info.periodInMinutes; }, onAlarm: event },
+  alarms: { get: async (_name) => (alarmPeriod ? { periodInMinutes: alarmPeriod } : undefined), async create(_name, info) { alarmPeriod = info.periodInMinutes; }, async clear() { alarmPeriod = 0; return true; }, onAlarm: event },
   storage: { local: {
     get(keys, callback) {
       const names = typeof keys === 'string' ? [keys] : keys;
@@ -89,7 +90,8 @@ const context = vm.createContext({
   async fetch(url) {
     requests.push(url);
     if (networkMode === 'failed') return result('', false);
-    if (url.startsWith('https://cloudflare.com/')) return cloudflareDown ? result('', false) : result(`ip=${currentV4}\nloc=${cloudflareLoc}\n`);
+    if (url.startsWith('https://cloudflare.com/')) return cloudflareDown ? result('', false) : result(`ip=${cloudflareV6 ? '2001:db8::5' : currentV4}\nloc=${cloudflareLoc}\n`);
+    if (url.startsWith('https://ipv4.icanhazip.com')) return cloudflareDown ? result('', false) : result(`${currentV4}\n`);
     if (new URL(url).hostname === 'api.ipify.org') {
       if (stallIpify) return { ...result(''), text: () => new Promise(() => {}) };
       return rateLimitIpify
@@ -113,7 +115,9 @@ const context = vm.createContext({
 
 async function main() {
   vm.runInContext(source, context);
-  vm.runInContext('ROUTE_MIN_PERSIST_MS = 0', context); // probes here run milliseconds apart; persistence is tested below
+  vm.runInContext('ROUTE_MIN_PERSIST_MS = 0', context);
+  vm.runInContext('NOTIFY_GEO_WAIT_MS = 40', context); // probes here run milliseconds apart; persistence is tested below
+  await vm.runInContext('ensureAlarm()', context);
   assert.equal(alarmPeriod, 0.5, 'Existing one-minute alarm must be upgraded');
   assert.equal(vm.runInContext('isValidIPv4("256.1.1.1")', context), false);
   assert.equal(vm.runInContext('isValidIPv4("198.51.100.22")', context), true);
@@ -160,7 +164,9 @@ async function main() {
   assert.equal(data.latestV4Info.ip, currentV4, 'New IP should be visible before geolocation finishes');
   assert.equal(data.latestV4Info.isp, 'N/A', 'Initial result should show pending metadata');
   await new Promise(resolve => setTimeout(resolve, 0));
-  assert.equal(notifications.length, 1, 'IP change notification should not wait for geolocation');
+  assert.equal(notifications.length, 0, 'The alert waits briefly for the new location');
+  await new Promise(resolve => setTimeout(resolve, 80)); // NOTIFY_GEO_WAIT_MS is 40 ms here
+  assert.equal(notifications.length, 1, 'IP change notification should not wait for slow geolocation');
   releaseGeo();
   await changed;
   geoGate = null;
@@ -399,6 +405,7 @@ async function main() {
   seq = run([[A, B], [A, B], [A, B], [A, A], [A, B], [A, B], [A, B]], at(A), () => true, 3_000);
   assert.ok(seq.every(r => !r.confirmed.length), 'Agreement in between restarts the 15 s clock');
   vm.runInContext('ROUTE_MIN_PERSIST_MS = 0', context);
+  vm.runInContext('NOTIFY_GEO_WAIT_MS = 40', context);
 
   const fresh = evalRoute({ edge: E(A), independent: I(A) }, null);
   assert.equal(fresh.notify, null, 'First run is a baseline, not a change');
@@ -594,6 +601,141 @@ async function main() {
 
   // One IPv6 address in two spellings is the same address.
   assert.equal(vm.runInContext("canonicalIPv6('2001:DB8:0:0:0:0:0:1')", context), '2001:db8::1');
+
+  // --- Fixes from the 1.0.4 review ---
+  // Only public addresses count as "the IP websites see".
+  for (const ip of ['192.168.1.1', '10.0.0.1', '127.0.0.1', '198.18.0.1', '100.64.0.1', '0.0.0.0', '224.0.0.1', '169.254.1.1']) {
+    assert.equal(vm.runInContext(`isValidIPv4(${JSON.stringify(ip)})`, context), false, `${ip} is not public`);
+  }
+  for (const ip of ['::1', 'fe80::1', 'fd00::1', 'fc12:3456::1', 'ff02::1', '::ffff:1.2.3.4']) {
+    assert.equal(vm.runInContext(`isValidIPv6(${JSON.stringify(ip)})`, context), false, `${ip} is not public`);
+  }
+  assert.equal(vm.runInContext('isValidIPv6("fe8:1::1")', context), true, 'fe8:: is not link-local');
+  assert.equal(vm.runInContext('isValidIPv4("203.0.113.5")', context), true);
+
+  // Null Island and placeholder words are no location; ASN prefixes are split off.
+  assert.equal(vm.runInContext('JSON.stringify(normalizeLatLon(0, 0))', context), '{"lat":null,"lon":null}');
+  assert.equal(vm.runInContext('JSON.stringify(normalizeLatLon("51.5", "-0.1"))', context), '{"lat":51.5,"lon":-0.1}');
+  assert.equal(vm.runInContext('cleanPlace("Unknown") + cleanPlace(" N/A ") + cleanPlace("-")', context), '');
+  assert.equal(vm.runInContext('JSON.stringify(splitAsnPrefix("AS13335 Cloudflare, Inc."))', context), '{"asn":"AS13335","name":"Cloudflare, Inc."}');
+  for (const [isp, type] of [['Cloudflare WARP', 'VPN / Relay'], ['St. Cloud Broadband', 'Unknown'], ['Hetzner Online GmbH', 'Datacenter'],
+    ['MTN Irancell', 'Mobile'], ['Mullvad VPN AB', 'VPN / Relay'], ['Observer Networks', 'Unknown']]) {
+    assert.equal(vm.runInContext(`classifyConnectionType({ isp: ${JSON.stringify(isp)} })`, context), type, isp);
+  }
+
+  // Dual-stack: cloudflare.com answers with the IPv6 address, so icanhazip gives the IPv4 and the
+  // trace is skipped on the following checks.
+  cloudflareV6 = true;
+  let mark = requests.length;
+  await vm.runInContext('fetchAllBackgroundLocations(true)', context);
+  assert.equal(data.latestV4Info.ip, currentV4, 'IPv4 still found on a dual-stack network');
+  assert.ok(requests.slice(mark).some(url => url.startsWith('https://ipv4.icanhazip.com')), 'icanhazip answers for IPv4');
+  mark = requests.length;
+  await vm.runInContext('fetchAllBackgroundLocations(true)', context);
+  assert.ok(!requests.slice(mark).some(url => url.startsWith('https://cloudflare.com/')), 'the IPv6-only trace is skipped for a while');
+  cloudflareV6 = false;
+  vm.runInContext('cfTraceV6Until = 0', context);
+
+  // A forced check requested while a queued forced check is already running gets its own run.
+  {
+    const traces = () => requests.filter(url => url.startsWith('https://cloudflare.com/')).length;
+    const start = traces();
+    let release1, release2;
+    geoGate = new Promise(resolve => { release1 = resolve; });
+    geoStarted = new Promise(resolve => { notifyGeoStarted = resolve; });
+    currentV4 = '198.51.100.31';
+    const a = vm.runInContext('fetchAllBackgroundLocations(true)', context);
+    await geoStarted;                       // A is looking up its location
+    const b = vm.runInContext('fetchAllBackgroundLocations(true)', context); // queued behind A
+    currentV4 = '198.51.100.32';            // B will find a new IP and look it up too
+    geoGate = new Promise(resolve => { release2 = resolve; });
+    geoStarted = new Promise(resolve => { notifyGeoStarted = resolve; });
+    release1();
+    await a;
+    await geoStarted;                       // B is running now
+    const c = vm.runInContext('fetchAllBackgroundLocations(true)', context);
+    geoGate = null;
+    release2();
+    await Promise.all([b, c]);
+    assert.equal(traces() - start, 3, 'a request during the queued run gets a run of its own');
+  }
+
+  // One silent IPv4 probe on a dual-stack network holds the IPv4 ("Verifying"); it is dropped
+  // only after both groups stayed silent twice.
+  {
+    const r1 = evalRoute({ edge: null, independent: null }, at(A), { announcedIp: A, edgeMisses: 0, indepMisses: 0 });
+    assert.equal(r1.held, true, 'first silent probe holds the IPv4');
+    const r2 = evalRoute({ edge: null, independent: null }, at(A), r1.state);
+    assert.equal(r2.held, false, 'after two silent probes the IPv4 is no longer held');
+  }
+
+  // When ipify agrees with Cloudflare again, evidence left by its fallback (Amazon) is cleared;
+  // the reverse (Amazon agreeing) still never erases ipify evidence (R5 above).
+  {
+    const seq = run([[A, I(B, 'Amazon')], [A, I(B, 'Amazon')], [A, A]]);
+    assert.ok(seq[1].divergence, 'Amazon evidence confirmed');
+    assert.equal(seq[2].divergence, null, 'ipify agreeing clears it');
+  }
+
+  // Geolocation: an incomplete answer is not cached, and a failed refresh keeps a complete location.
+  {
+    geoDown = true;
+    const before = requests.filter(url => url.startsWith('https://ipwho.is/')).length;
+    await vm.runInContext('getGeoLocation("203.0.113.70", "DE")', context);
+    await vm.runInContext('getGeoLocation("203.0.113.70", "DE")', context);
+    assert.equal(requests.filter(url => url.startsWith('https://ipwho.is/')).length, before + 2, 'a failed lookup is not cached');
+    const complete = { ...data.latestV4Info };
+    assert.ok(complete.city || complete.isp !== 'N/A');
+    data.latestV4Info = { ...complete, updatedAt: Date.now() - 10 * 60_000 };
+    await vm.runInContext('fetchAllBackgroundLocations(true)', context);
+    assert.equal(data.latestV4Info.isp, complete.isp, 'a failed refresh must not erase a complete location');
+    geoDown = false;
+  }
+
+  // Settings: only known keys with valid values are stored.
+  await vm.runInContext('updateSettings({ badgeMode: "nonsense", injected: 1, showMap: "yes", optionsTheme: "dark" })', context);
+  assert.equal(data.appSettings.injected, undefined);
+  assert.notEqual(data.appSettings.badgeMode, 'nonsense');
+  assert.notEqual(data.appSettings.showMap, 'yes');
+  assert.equal(data.appSettings.optionsTheme, 'dark');
+  assert.equal(vm.runInContext('JSON.stringify(validSettingsPatch(["x"]))', context), '{}');
+  // Automatic checks off removes the 30-second alarm; on again restores it.
+  await vm.runInContext('updateSettings({ enableAutoRefresh: false })', context);
+  assert.equal(alarmPeriod, 0, 'no alarm while automatic checks are off');
+  await vm.runInContext('updateSettings({ enableAutoRefresh: true })', context);
+  await vm.runInContext('ensureAlarm()', context);
+  assert.equal(alarmPeriod, 0.5, 'alarm back when automatic checks are on');
+  await vm.runInContext('activeProbePromise', context);
+
+  // The fast channel's IP is compared with the address shown for that family.
+  {
+    const probes = () => requests.filter(url => url.startsWith('https://cloudflare.com/') || url.startsWith('https://ipv4.icanhazip.com')).length;
+    delete data.fastChannelIp;
+    let before = probes();
+    await vm.runInContext(`onFastChannelIp(${JSON.stringify(data.latestV4Info.ip)})`, context);
+    await vm.runInContext('activeProbePromise', context);
+    assert.equal(probes(), before, 'the server seeing the shown IP triggers nothing');
+    delete data.fastChannelIp;
+    before = probes();
+    await vm.runInContext('onFastChannelIp("203.0.113.200")', context);
+    await vm.runInContext('activeProbePromise', context);
+    assert.ok(probes() > before, 'a first value that differs from the shown IP is checked at once');
+    assert.equal(vm.runInContext('isAllowedDevChannelUrl("ws://example.com/v1/ws")', context), false);
+    assert.equal(vm.runInContext('isAllowedDevChannelUrl("ws://127.0.0.1:9000/v1/ws")', context), true);
+  }
+
+  // A change of country gets its own alert; a new address in the same country is routine.
+  {
+    data.appSettings.enableNotifications = true;
+    data.announcedCountries = { IPv4: 'DE' };
+    data.lastNotifTimeIPv4 = 0;
+    await vm.runInContext('deliverIPChangeNotification("IPv4", "203.0.113.4", { ip: "203.0.113.5", countryCode: "IR", country: "Iran" })', context);
+    assert.match(notifications.at(-1).title, /Country changed: DE → IR/);
+    assert.equal(data.announcedCountries.IPv4, 'IR', 'the new country becomes the baseline');
+    data.lastNotifTimeIPv4 = 0;
+    await vm.runInContext('deliverIPChangeNotification("IPv4", "203.0.113.5", { ip: "203.0.113.6", countryCode: "IR", country: "Iran" })', context);
+    assert.match(notifications.at(-1).title, /IPv4 IP Changed \(IR\)/, 'same country: the routine alert');
+  }
 
   networkMode = 'failed';
   const failed = await vm.runInContext('fetchAllBackgroundLocations(true)', context);

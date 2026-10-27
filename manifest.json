@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "LeakHalo – IP & WebRTC Leak Protection",
+  "name": "__MSG_extName__",
   "short_name": "LeakHalo",
-  "version": "1.0.3",
-  "description": "Check your public IP, detect WebRTC leaks, and verify your online privacy at a glance.",
+  "version": "1.1.0",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
   "permissions": [
     "storage",
     "alarms",
@@ -21,14 +22,20 @@
     "default_popup": "popup/popup.html",
     "default_icon": {
       "16": "assets/icons/icon16.png",
+      "32": "assets/icons/icon32.png",
       "48": "assets/icons/icon48.png",
       "128": "assets/icons/icon128.png"
-    }
+    },
+    "default_title": "LeakHalo: checking your connection…"
   },
   "icons": {
     "16": "assets/icons/icon16.png",
+    "32": "assets/icons/icon32.png",
     "48": "assets/icons/icon48.png",
     "128": "assets/icons/icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; connect-src 'self' https://cloudflare.com https://ipv4.icanhazip.com https://ipv6.icanhazip.com https://api.ipify.org https://api6.ipify.org https://checkip.amazonaws.com https://ipwho.is https://get.geojs.io https://ipinfo.io https://35-232-61-175.sslip.io wss://35-232-61-175.sslip.io ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*"
   },
   "minimum_chrome_version": "120"
 }

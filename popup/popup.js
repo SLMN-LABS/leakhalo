@@ -4,6 +4,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const settingsToggleBtn = document.getElementById('settingsToggleBtn');
   const shieldToggleBtn = document.getElementById('shieldToggleBtn');
   const refreshBtn = document.getElementById('refreshBtn');
+  const maskToggleBtn = document.getElementById('maskToggleBtn');
   const splitBadge = document.getElementById('splitBadge');
   const routeAlert = document.getElementById('routeAlert');
   const routeAlertRows = document.getElementById('routeAlertRows');
@@ -39,6 +40,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const v6Isp = document.getElementById('v6Isp');
   const v6MapBtn = document.getElementById('v6MapBtn');
   const v6IspRow = document.getElementById('v6IspRow');
+  const v6TzRow = document.getElementById('v6TzRow');
+  const v6Tz = document.getElementById('v6Tz');
+  const copyAnnouncer = document.getElementById('copyAnnouncer');
 
   const securityBar = document.getElementById('securityBar');
   const shieldStatusPill = document.getElementById('shieldStatusPill');
@@ -53,6 +57,17 @@ document.addEventListener('DOMContentLoaded', () => {
   let isTogglingShield = false;
   let hasRenderedOnce = false;
   let lastRenderedFingerprint = '';
+  let lastAuditSignature = '';
+  // Settings of the current render: screenshot mode and the optional time-zone row.
+  let maskIps = false;
+  let showTimeZone = false;
+
+  // Screenshot mode keeps the network part and hides the rest: 185.220.•••.•••, 2001:db8:•••.
+  function shownIp(ip) {
+    if (!maskIps || !ip) return ip;
+    if (!ip.includes(':')) return ip.split('.').slice(0, 2).concat('•••', '•••').join('.');
+    return `${ip.split(':').filter(Boolean).slice(0, 2).join(':')}:•••`;
+  }
 
   const WEBRTC_STATES = {
     DISABLED: 'disabled',
@@ -99,6 +114,7 @@ document.addEventListener('DOMContentLoaded', () => {
       shieldToggleBtn.title = cfg.btnTitle;
       shieldToggleBtn.setAttribute('aria-pressed', String(!cfg.btnOff));
     }
+    shieldStatusPill?.setAttribute('aria-pressed', String(!cfg.btnOff));
     if (shieldDot && shieldStatusText) {
       shieldDot.className = cfg.dotClass;
       shieldStatusText.className = cfg.statusClass;
@@ -127,7 +143,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (runtimeState.webrtc === WEBRTC_STATES.LEAK) {
       const leakedIps = extra.leakedIPs?.join(', ') || '';
       const exitIp = extra.exitIp || 'N/A';
-      webrtcItem.title = `⚠️ WebRTC Leak Detected!\nReal IP: ${leakedIps}\n(VPN Exit IP: ${exitIp})\nClick Armor to enable protection.`;
+      const advice = extra.balanced
+        ? 'Balanced mode lets WebRTC use your default network. Choose Strict in Settings.'
+        : 'Click Armor to enable protection.';
+      webrtcItem.title = `⚠️ WebRTC Leak Detected!\nReal IP: ${leakedIps}\n(VPN Exit IP: ${exitIp})\n${advice}`;
     } else {
       webrtcItem.title = cfg.title;
     }
@@ -146,17 +165,17 @@ document.addEventListener('DOMContentLoaded', () => {
       try { activeProbePC.close(); } catch (e) {}
       activeProbePC = null;
     }
-
-    setWebRTCState(targetOn ? 'unknown' : 'probing');
+    lastAuditSignature = '';
+    // Turning protection off starts a check; turning it on waits for the browser's confirmation
+    // instead of flashing a warning colour first.
+    if (!targetOn) setWebRTCState('probing');
 
     chrome.runtime.sendMessage({ type: 'TOGGLE_SHIELD', explicitState: targetOn }, (res) => {
+      void chrome.runtime.lastError;
       setTimeout(() => { isTogglingShield = false; }, 100);
       if (res && typeof res.shieldActive === 'boolean') {
         setShieldState(res.shieldActive ? (res.shieldEffective ? 'on' : 'error') : 'off');
-        chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'appSettings', 'shieldEffective', 'isOffline', 'probeError', 'v4Unverified'], (data) => {
-          const unverified = data.isOffline === true || data.probeError === true || data.v4Unverified === true;
-          runSecurityAudit(data.latestV4Info, data.latestV6Info, data.appSettings, data.shieldEffective, unverified);
-        });
+        loadData(false);
       } else {
         loadData(true);
       }
@@ -168,9 +187,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (refreshBtn) {
     refreshBtn.addEventListener('click', () => {
+      if (refreshBtn.disabled) return;
+      refreshBtn.disabled = true;
       refreshBtn.classList.add('rotating');
       chrome.runtime.sendMessage({ type: 'REFRESH_NOW' }, () => {
-        setTimeout(() => refreshBtn.classList.remove('rotating'), 650);
+        void chrome.runtime.lastError;
+        setTimeout(() => {
+          refreshBtn.classList.remove('rotating');
+          refreshBtn.disabled = false;
+        }, 650);
+        loadData(true, true);
+      });
+    });
+  }
+
+  if (maskToggleBtn) {
+    maskToggleBtn.addEventListener('click', () => {
+      const next = !maskIps;
+      maskToggleBtn.setAttribute('aria-pressed', String(next));
+      chrome.runtime.sendMessage({ type: 'UPDATE_SETTINGS', patch: { maskIp: next } }, () => {
+        void chrome.runtime.lastError;
         loadData(true);
       });
     });
@@ -187,14 +223,17 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  const regionNames = (() => {
+    try { return new Intl.DisplayNames(['en'], { type: 'region' }); } catch (e) { return null; }
+  })();
+
   function getFullCountryName(code, fallbackName) {
     // Short names where the CLDR English label is longer than the ISO 3166-1 short name.
     const shortNames = { PS: 'Palestine' };
     if (code && shortNames[code.toUpperCase()]) return shortNames[code.toUpperCase()];
-    if (code && typeof Intl !== 'undefined' && Intl.DisplayNames) {
+    if (code && regionNames) {
       try {
-        const dn = new Intl.DisplayNames(['en'], { type: 'region' });
-        const name = dn.of(code.toUpperCase());
+        const name = regionNames.of(code.toUpperCase());
         if (name && name !== code.toUpperCase()) return name;
       } catch (e) {}
     }
@@ -210,6 +249,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let asn = (rawAsn || '').trim();
     if (isp === 'N/A') isp = '';
     if (asn === 'N/A') asn = '';
+    if (/^\d+$/.test(asn)) asn = `AS${asn}`;
 
     let detectedAsn = asn;
     const asMatch = isp.match(/\bAS(\d+)\b/i) || asn.match(/\bAS(\d+)\b/i);
@@ -219,7 +259,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let cleanIsp = isp
       .replace(/^AS\d+\s*[-_:]*\s*/i, '')
-      .replace(/\s*\(?AS\d+\)?\s*$/i, '')
+      .replace(/\s*[-_:/|]*\s*\(?AS\d+\)?\s*$/i, '')
       .replace(/\s*\(?AS\d+\)?/gi, '')
       .trim();
 
@@ -229,26 +269,28 @@ document.addEventListener('DOMContentLoaded', () => {
     return '';
   }
 
-  function setupClickToCopy(rowElement, textElement, statusElement) {
-    if (!rowElement || !textElement || !statusElement) return;
+  // Copies the address the row was given (setCopyable), never text read back from the page.
+  function setupClickToCopy(rowElement, statusElement, label) {
+    if (!rowElement || !statusElement) return;
+    let copyTimer = null;
 
     function triggerCopy() {
-      const text = textElement.innerText?.trim();
-      if (!text || !(/^[0-9.]+$/.test(text) || /^[0-9a-f:]+$/i.test(text)) || text === '0.0.0.0' || text === '::') return;
-
-      navigator.clipboard.writeText(text).then(() => {
-        rowElement.classList.add('copied');
-        statusElement.innerText = 'Copied ✓';
-        setTimeout(() => {
+      const text = rowElement.dataset.ip;
+      if (!text) return;
+      const settle = (status, announcement, copied) => {
+        clearTimeout(copyTimer);
+        rowElement.classList.toggle('copied', copied);
+        statusElement.innerText = status;
+        if (copyAnnouncer) copyAnnouncer.textContent = announcement;
+        copyTimer = setTimeout(() => {
           rowElement.classList.remove('copied');
           statusElement.innerText = 'Copy';
+          if (copyAnnouncer) copyAnnouncer.textContent = '';
         }, 1300);
-      }).catch(() => {
-        statusElement.innerText = 'Failed';
-        setTimeout(() => {
-          statusElement.innerText = 'Copy';
-        }, 1300);
-      });
+      };
+      navigator.clipboard.writeText(text)
+        .then(() => settle('Copied ✓', `${label} address copied`, true))
+        .catch(() => settle('Failed', 'Copy failed', false));
     }
 
     rowElement.addEventListener('click', triggerCopy);
@@ -260,8 +302,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  setupClickToCopy(v4IpRow, v4Ip, v4CopyStatus);
-  setupClickToCopy(v6IpRow, v6Ip, v6CopyStatus);
+  setupClickToCopy(v4IpRow, v4CopyStatus, 'IPv4');
+  setupClickToCopy(v6IpRow, v6CopyStatus, 'IPv6');
 
   // Pseudo codes (XX unknown, T1 Tor, EU region…) are never a country or a flag.
   const PSEUDO_COUNTRY_CODES = new Set(['XX', 'ZZ', 'T1', 'A1', 'A2', 'O1', 'EU', 'AP']);
@@ -277,11 +319,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // An address row can be copied only while it shows an address.
   function setCopyable(row, ip, label) {
+    row.dataset.ip = ip || '';
     row.classList.toggle('no-ip', !ip);
     row.tabIndex = ip ? 0 : -1;
     if (ip) {
       row.setAttribute('role', 'button');
-      row.setAttribute('aria-label', `${label} ${ip}. Copy`);
+      row.setAttribute('aria-label', maskIps ? `${label} address (hidden). Copy` : `${label} ${ip}. Copy`);
       row.title = 'Click to copy IP address';
     } else {
       row.removeAttribute('role');
@@ -292,10 +335,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Popup flags are rectangular artwork (assets/flags-rect, 96x72) so they stay sharp in the
   // 36x26 frame; the square toolbar set is the fallback, then the app icon.
+  function clearWatermark(watermark) {
+    watermark.onerror = null;
+    watermark.removeAttribute('src');
+    watermark.hidden = true;
+  }
+
+  // The app icon in place of a flag (offline, pending or unknown country), with no watermark.
+  function setNoFlag(img, watermark) {
+    delete img.dataset.code;
+    img.onerror = null;
+    img.src = '/assets/icons/icon48.png';
+    clearWatermark(watermark);
+  }
+
   function setPopupFlag(img, watermark, code) {
     // Re-assigning the same flag every 3 seconds would only re-decode it.
     if (img.dataset.code === code) return;
     img.dataset.code = code;
+    // Handlers left from an earlier flag must not fire for this one (they would bring it back).
+    img.onerror = null;
+    watermark.onerror = null;
     const rect = `/assets/flags-rect/flag-${code}.png`;
     const square = `/assets/flags/flag-${code}.png`;
     img.onerror = function() {
@@ -306,9 +366,10 @@ document.addEventListener('DOMContentLoaded', () => {
       this.src = square;
     };
     watermark.onerror = function() {
-      this.onerror = null;
+      this.onerror = function() { clearWatermark(this); };
       this.src = square;
     };
+    watermark.hidden = false;
     img.src = rect;
     watermark.src = rect;
   }
@@ -318,9 +379,9 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const name = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' })
         .formatToParts(new Date()).find(part => part.type === 'timeZoneName')?.value || '';
-      if (name === 'GMT') return 0;
-      const m = name.match(/^GMT([+-])(\d{2}):(\d{2})$/);
-      return m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : null;
+      if (name === 'GMT' || name === 'UTC') return 0;
+      const m = name.match(/^(?:GMT|UTC)([+\-\u2212])(\d{1,2})(?::?(\d{2}))?$/i);
+      return m ? (m[1] === '+' ? 1 : -1) * (Number(m[2]) * 60 + Number(m[3] || 0)) : null;
     } catch (e) {
       return null;
     }
@@ -328,24 +389,95 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Websites can compare the browser's clock with the IP's location; a different time zone can
   // reveal a VPN or proxy. Compared by current UTC offset, so neighbouring zones count as a match.
-  function renderTimeZone(ipZone) {
+  const ipZoneOffset = zone => typeof zone === 'string' && zone && zone !== 'N/A' ? zoneOffsetMinutes(zone) : null;
+
+  function renderTimeZone(ipZone, row, valueEl) {
     const browserZone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
-    const ipOffset = typeof ipZone === 'string' && ipZone && ipZone !== 'N/A' ? zoneOffsetMinutes(ipZone) : null;
+    const ipOffset = ipZoneOffset(ipZone);
     const browserOffset = browserZone ? zoneOffsetMinutes(browserZone) : null;
     if (ipOffset === null || browserOffset === null) {
-      v4TzRow.style.display = 'none';
+      row.style.display = 'none';
       return;
     }
     const match = ipOffset === browserOffset;
     const readable = zone => zone.replace(/_/g, ' ');
-    v4Tz.innerText = match ? readable(ipZone) : `${readable(ipZone)} · your clock ${readable(browserZone)}`;
-    v4Tz.title = match
+    valueEl.innerText = match ? readable(ipZone) : `${readable(ipZone)} · your clock ${readable(browserZone)}`;
+    valueEl.title = match
       ? 'Your browser clock matches the time zone of this IP.'
       : 'Your browser clock is in a different time zone than this IP. Websites can compare the two, which can reveal a VPN or proxy.';
-    v4Tz.classList.toggle('tz-match', match);
-    v4Tz.classList.toggle('tz-mismatch', !match);
-    v4TzRow.style.display = 'flex';
+    valueEl.classList.toggle('tz-match', match);
+    valueEl.classList.toggle('tz-mismatch', !match);
+    row.style.display = 'flex';
   }
+
+  const MAP_TITLE = 'Open approximate location in OpenStreetMap';
+  // A map link only for real coordinates (0,0 is what some services send for "unknown").
+  function setMapLink(link, lat, lon) {
+    const la = parseFloat(lat), lo = parseFloat(lon);
+    const ok = Number.isFinite(la) && Number.isFinite(lo) && Math.abs(la) <= 90 && Math.abs(lo) <= 180 && !(la === 0 && lo === 0);
+    if (ok) {
+      link.href = `https://www.openstreetmap.org/?mlat=${encodeURIComponent(la)}&mlon=${encodeURIComponent(lo)}&zoom=11`;
+      link.classList.remove('disabled');
+    } else {
+      link.removeAttribute('href');
+      link.classList.add('disabled');
+    }
+    syncMapTitle(link);
+  }
+  function syncMapTitle(link) {
+    if (link.classList.contains('disabled') || link.classList.contains('no-map')) link.removeAttribute('title');
+    else link.title = MAP_TITLE;
+  }
+
+  function renderTypeTag(tag, data, probeError, pending) {
+    if (!tag) return;
+    if (probeError) {
+      // The providers did not answer this time: what is shown is the last verified result.
+      tag.className = 'type-tag offline';
+      tag.innerText = 'Last known';
+      tag.style.display = 'inline-flex';
+    } else if (!pending && data.connectionType && data.connectionType !== 'Unknown') {
+      const rawType = data.connectionType.toLowerCase();
+      const typeClass = rawType.includes('data') ? 'datacenter'
+        : rawType.includes('resid') ? 'residential'
+        : rawType.includes('vpn') ? 'vpn'
+        : rawType.includes('mobi') ? 'mobile'
+        : 'datacenter';
+      tag.className = `type-tag ${typeClass}`;
+      tag.innerText = data.connectionType;
+      tag.style.display = 'inline-flex';
+    } else {
+      tag.style.display = 'none';
+    }
+  }
+
+  // Country, place, flag, map link and ISP of one address family. `pending`: the location lookup
+  // has not answered yet, so nothing is called unknown or unavailable.
+  function renderPlace(els, data, probeError) {
+    const code = realCountryCode(data.countryCode);
+    // Cloudflare may already have given the country; city and network follow from the lookup.
+    const pending = data.pending === true;
+    const resolvedCountry = pending && !code ? 'Locating…' : getFullCountryName(code, code ? data.country : '');
+    els.country.innerText = resolvedCountry;
+    renderTypeTag(els.typeTag, data, probeError, pending);
+
+    const locText = pending ? 'Looking up location…'
+      : placeText(data.city, data.region) || (code ? resolvedCountry : 'Location unavailable');
+    els.city.innerText = locText;
+    els.city.title = locText;
+
+    if (code) setPopupFlag(els.flag, els.watermark, code.toLowerCase());
+    else setNoFlag(els.flag, els.watermark);
+    setMapLink(els.map, data.lat, data.lon);
+
+    const ispText = pending ? '' : formatIspAsn(data.isp, data.asn);
+    els.isp.innerText = ispText;
+    els.isp.title = ispText;
+    els.ispRow.style.display = ispText ? 'flex' : 'none';
+  }
+
+  const v4Els = { country: v4Country, typeTag: v4TypeTag, city: v4CityRegion, flag: v4FlagImg, watermark: v4Watermark, map: v4MapBtn, isp: v4Isp, ispRow: v4IspRow };
+  const v6Els = { country: v6Country, typeTag: v6TypeTag, city: v6CityRegion, flag: v6FlagImg, watermark: v6Watermark, map: v6MapBtn, isp: v6Isp, ispRow: v6IspRow };
 
   function renderIPv4(data, isOffline = false, probeError = false, hasResult = false) {
     // IPv6 works but there is no IPv4: a one-line note instead of a large failure card.
@@ -355,17 +487,14 @@ document.addEventListener('DOMContentLoaded', () => {
     if (v6Only) return;
     if (isOffline || !data || !data.ip) {
       setCopyable(v4IpRow, '', 'IPv4');
-      delete v4FlagImg.dataset.code;
       v4Country.innerText = isOffline ? 'Offline' : (probeError || hasResult ? 'IPv4 unavailable' : 'Checking...');
       v4Ip.innerText = isOffline ? 'No Connection' : (probeError || hasResult ? 'Unavailable' : 'Checking network');
-      v4FlagImg.src = '/assets/icons/icon48.png';
-      v4Watermark.src = '';
+      setNoFlag(v4FlagImg, v4Watermark);
       v4CityRegion.innerText = isOffline ? 'Network connection unavailable' : (probeError ? 'Unable to verify network' : (hasResult ? 'IPv6 connection detected' : 'Waiting for network check'));
       v4CityRegion.title = v4CityRegion.innerText;
       v4IspRow.style.display = 'none';
       v4TzRow.style.display = 'none';
-      v4MapBtn.removeAttribute('href');
-      v4MapBtn.classList.add('disabled');
+      setMapLink(v4MapBtn, null, null);
       if (v4TypeTag) {
         v4TypeTag.className = 'type-tag offline';
         v4TypeTag.innerText = isOffline ? 'Disconnected' : (probeError ? 'Error' : (hasResult ? 'Unavailable' : 'Pending'));
@@ -374,66 +503,15 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const v4Code = realCountryCode(data.countryCode);
-    const resolvedCountry = getFullCountryName(v4Code, v4Code ? data.country : '');
-    v4Country.innerText = resolvedCountry;
-    v4Ip.innerText = data.ip;
-    v4Ip.title = data.ip;
+    v4Ip.innerText = shownIp(data.ip);
+    v4Ip.title = shownIp(data.ip);
     setCopyable(v4IpRow, data.ip, 'IPv4');
-
-    if (v4TypeTag && probeError) {
-      // The providers did not answer this time: what is shown is the last verified result.
-      v4TypeTag.className = 'type-tag offline';
-      v4TypeTag.innerText = 'Last known';
-      v4TypeTag.style.display = 'inline-flex';
-    } else if (v4TypeTag && data.connectionType && data.connectionType !== 'Unknown') {
-      const rawType = data.connectionType.toLowerCase();
-      const typeClass = rawType.includes('data') ? 'datacenter'
-        : rawType.includes('resid') ? 'residential'
-        : rawType.includes('vpn') ? 'vpn'
-        : rawType.includes('mobi') ? 'mobile'
-        : 'datacenter';
-      v4TypeTag.className = `type-tag ${typeClass}`;
-      v4TypeTag.innerText = data.connectionType;
-      v4TypeTag.style.display = 'inline-flex';
-    } else if (v4TypeTag) {
-      v4TypeTag.style.display = 'none';
-    }
-
-    const locText = placeText(data.city, data.region) || (v4Code ? resolvedCountry : 'Location unavailable');
-    v4CityRegion.innerText = locText;
-    v4CityRegion.title = locText;
-
-    if (v4Code) {
-      setPopupFlag(v4FlagImg, v4Watermark, v4Code.toLowerCase());
-    } else {
-      delete v4FlagImg.dataset.code;
-      v4FlagImg.src = '/assets/icons/icon48.png';
-      v4Watermark.src = '';
-    }
-
-    const lat = parseFloat(data.lat);
-    const lon = parseFloat(data.lon);
-    if (Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
-      v4MapBtn.href = `https://www.openstreetmap.org/?mlat=${encodeURIComponent(lat)}&mlon=${encodeURIComponent(lon)}&zoom=11`;
-      v4MapBtn.classList.remove('disabled');
-    } else {
-      v4MapBtn.removeAttribute('href');
-      v4MapBtn.classList.add('disabled');
-    }
-
-    const ispText = formatIspAsn(data.isp, data.asn);
-    if (ispText) {
-      v4Isp.innerText = ispText;
-      v4Isp.title = ispText;
-      v4IspRow.style.display = 'flex';
-    } else {
-      v4IspRow.style.display = 'none';
-    }
-    renderTimeZone(data.timezone);
+    renderPlace(v4Els, data, probeError);
+    if (showTimeZone) renderTimeZone(data.timezone, v4TzRow, v4Tz);
+    else v4TzRow.style.display = 'none';
   }
 
-  function renderIPv6(data, isOffline = false, checking = false, probeError = false) {
+  function renderIPv6(data, isOffline = false, checking = false, probeError = false, v4 = null) {
     if (isOffline || !data || !data.ip) {
       v6ActiveCard.style.display = 'none';
       v6InactivePill.style.display = 'flex';
@@ -445,62 +523,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     v6InactivePill.style.display = 'none';
     v6ActiveCard.style.display = 'block';
-
-    const v6Code = realCountryCode(data.countryCode);
-    const resolvedCountry = getFullCountryName(v6Code, v6Code ? data.country : '');
-    v6Country.innerText = resolvedCountry;
-    v6Ip.innerText = data.ip;
-    v6Ip.title = data.ip; // long addresses are shortened with an ellipsis
+    v6Ip.innerText = shownIp(data.ip);
+    v6Ip.title = shownIp(data.ip); // long addresses are shortened with an ellipsis
     setCopyable(v6IpRow, data.ip, 'IPv6');
-
-    if (v6TypeTag && probeError) {
-      v6TypeTag.className = 'type-tag offline';
-      v6TypeTag.innerText = 'Last known';
-      v6TypeTag.style.display = 'inline-flex';
-    } else if (v6TypeTag && data.connectionType && data.connectionType !== 'Unknown') {
-      const rawType = data.connectionType.toLowerCase();
-      const typeClass = rawType.includes('data') ? 'datacenter'
-        : rawType.includes('resid') ? 'residential'
-        : rawType.includes('vpn') ? 'vpn'
-        : rawType.includes('mobi') ? 'mobile'
-        : 'datacenter';
-      v6TypeTag.className = `type-tag ${typeClass}`;
-      v6TypeTag.innerText = data.connectionType;
-      v6TypeTag.style.display = 'inline-flex';
-    } else if (v6TypeTag) {
-      v6TypeTag.style.display = 'none';
-    }
-
-    const locText = placeText(data.city, data.region) || (v6Code ? resolvedCountry : 'Location unavailable');
-    v6CityRegion.innerText = locText;
-    v6CityRegion.title = locText;
-
-    if (v6Code) {
-      setPopupFlag(v6FlagImg, v6Watermark, v6Code.toLowerCase());
-    } else {
-      delete v6FlagImg.dataset.code;
-      v6FlagImg.src = '/assets/icons/icon48.png';
-      v6Watermark.src = '';
-    }
-
-    const lat = parseFloat(data.lat);
-    const lon = parseFloat(data.lon);
-    if (Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) {
-      v6MapBtn.href = `https://www.openstreetmap.org/?mlat=${encodeURIComponent(lat)}&mlon=${encodeURIComponent(lon)}&zoom=11`;
-      v6MapBtn.classList.remove('disabled');
-    } else {
-      v6MapBtn.removeAttribute('href');
-      v6MapBtn.classList.add('disabled');
-    }
-
-    const ispText = formatIspAsn(data.isp, data.asn);
-    if (ispText) {
-      v6Isp.innerText = ispText;
-      v6Isp.title = ispText;
-      v6IspRow.style.display = 'flex';
-    } else {
-      v6IspRow.style.display = 'none';
-    }
+    renderPlace(v6Els, data, probeError);
+    // The IPv6 time zone is worth a row only without an IPv4 card or when it differs from IPv4's.
+    const v4Offset = v4?.ip ? ipZoneOffset(v4.timezone) : null;
+    if (showTimeZone && (!v4?.ip || v4Offset === null || ipZoneOffset(data.timezone) !== v4Offset)) renderTimeZone(data.timezone, v6TzRow, v6Tz);
+    else v6TzRow.style.display = 'none';
   }
 
   // Two independent IP sources disagreeing (confirmed twice by the background) means some
@@ -520,7 +550,7 @@ document.addEventListener('DOMContentLoaded', () => {
       src.textContent = source;
       const ipEl = document.createElement('span');
       ipEl.className = 'ip';
-      ipEl.textContent = ip;
+      ipEl.textContent = shownIp(ip);
       el.append(src, ipEl);
       const code = realCountryCode(info?.countryCode).toLowerCase();
       if (code) {
@@ -546,57 +576,53 @@ document.addEventListener('DOMContentLoaded', () => {
     routeAlert.style.display = 'flex';
   }
 
-  function checkSplitRouting(v4, v6) {
+  // Shown only for two settled locations: an unverified or still-locating IPv4 would compare an
+  // old country with a new one.
+  function checkSplitRouting(v4, v6, v4Unverified = false) {
     if (!splitBadge) return;
-    if (v4 && v6 && realCountryCode(v4.countryCode) && realCountryCode(v6.countryCode) &&
-        realCountryCode(v4.countryCode) !== realCountryCode(v6.countryCode)) {
-      splitBadge.title = `Split Route Detected!\nIPv4: ${v4.country} (${v4.countryCode})\nIPv6: ${v6.country} (${v6.countryCode})`;
+    const v4Code = realCountryCode(v4?.countryCode), v6Code = realCountryCode(v6?.countryCode);
+    if (v4 && v6 && !v4Unverified && !v4.pending && !v6.pending && v4Code && v6Code && v4Code !== v6Code) {
+      splitBadge.title = `Split Route Detected!\nIPv4: ${getFullCountryName(v4Code, v4.country)} (${v4Code})\nIPv6: ${getFullCountryName(v6Code, v6.country)} (${v6Code})`;
       splitBadge.style.display = 'inline-flex';
     } else {
       splitBadge.style.display = 'none';
     }
   }
 
+  // Candidates that cannot be the public address websites see. Documentation ranges count as
+  // public (the tests use them).
   function isPrivateOrBogonIP(ip) {
-    if (!ip || typeof ip !== 'string') return true;
-    const s = ip.trim().toLowerCase();
-    if (!s || s === '0.0.0.0' || s === '::' || s === '::1') return true;
-    if (s.endsWith('.local') || s.endsWith('.arpa') || s.includes('.local')) return true;
-    if (s.startsWith('10.') || s.startsWith('192.168.') || s.startsWith('127.') || s.startsWith('169.254.')) return true;
-    if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(s)) return true;
-    if (s.startsWith('fc00:') || s.startsWith('fd00:') || s.startsWith('fe80:') || s.startsWith('ff00:')) return true;
-
+    const s = canonicalIp(ip);
+    if (!s || s.endsWith('.local') || s.endsWith('.arpa')) return true;
     const v4Parts = s.split('.');
     if (v4Parts.length === 4) {
-      const valid = v4Parts.every(p => {
-        const n = parseInt(p, 10);
-        return !isNaN(n) && n >= 0 && n <= 255 && p === String(n);
-      });
-      if (valid) {
-        const o0 = parseInt(v4Parts[0], 10);
-        const o1 = parseInt(v4Parts[1], 10);
-        if (o0 === 10 || o0 === 127 || o0 === 0) return true;
-        if (o0 === 192 && o1 === 168) return true;
-        if (o0 === 172 && o1 >= 16 && o1 <= 31) return true;
-        if (o0 === 169 && o1 === 254) return true;
-        if (o0 === 100 && o1 >= 64 && o1 <= 127) return true;
-        if (o0 >= 224) return true;
-        return false;
-      }
+      if (!v4Parts.every(p => /^\d{1,3}$/.test(p) && Number(p) <= 255 && p === String(Number(p)))) return true;
+      const [o0, o1, o2] = v4Parts.map(Number);
+      return o0 === 0 || o0 === 10 || o0 === 127 || o0 >= 224 ||
+        (o0 === 192 && o1 === 168) || (o0 === 172 && o1 >= 16 && o1 <= 31) || (o0 === 169 && o1 === 254) ||
+        (o0 === 100 && o1 >= 64 && o1 <= 127) || (o0 === 198 && (o1 === 18 || o1 === 19)) || (o0 === 192 && o1 === 0 && o2 === 0);
     }
-
-    if (s.includes(':') && /^[0-9a-f:]+$/i.test(s)) {
-      if (s.startsWith('fe80:') || s.startsWith('fc') || s.startsWith('fd') || s.startsWith('ff') || s === '::1') return true;
-      return false;
+    if (s.includes(':') && /^[0-9a-f:]+$/.test(s)) {
+      return s === '::' || s === '::1' || /^fe[89ab][0-9a-f]:/.test(s) || /^f[cd][0-9a-f]{2}:/.test(s) ||
+        /^ff[0-9a-f]{2}:/.test(s) || s.startsWith('64:ff9b:');
     }
-
     return true;
   }
 
+  // Lower-case, compressed IPv6; an IPv4-mapped IPv6 address becomes the IPv4 address.
   function canonicalIp(ip) {
     const s = (ip || '').trim().toLowerCase();
     if (!s.includes(':')) return s;
-    try { return new URL(`http://[${s}]/`).hostname.slice(1, -1); } catch (e) { return s; }
+    const mapped = s.match(/^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/);
+    if (mapped) return mapped[1];
+    let host;
+    try { host = new URL(`http://[${s}]/`).hostname.slice(1, -1); } catch (e) { return s; }
+    const hex = host.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (hex) {
+      const a = parseInt(hex[1], 16), b = parseInt(hex[2], 16);
+      return `${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`;
+    }
+    return host;
   }
 
   function probeWebRTCLeaks(v4Data, v6Data) {
@@ -622,12 +648,7 @@ document.addEventListener('DOMContentLoaded', () => {
           try { pc.close(); } catch (e) {}
         }
         const candidateList = Array.from(discoveredIPs);
-
-        const leaked = candidateList.filter(ip => {
-          const norm = canonicalIp(ip);
-          return norm !== activeV4 && norm !== activeV6;
-        });
-
+        const leaked = candidateList.filter(ip => ip !== activeV4 && ip !== activeV6);
         resolve({
           leaked: leaked.length > 0,
           verified: candidateList.length > 0,
@@ -636,12 +657,16 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       }
 
-      timer = setTimeout(() => {
-        done();
-      }, 1200);
+      const addCandidate = (raw) => {
+        const ip = canonicalIp(raw);
+        if (ip && !isPrivateOrBogonIP(ip)) discoveredIPs.add(ip);
+      };
+
+      // One deadline for slow links; usually gathering completes much sooner and ends the check.
+      timer = setTimeout(done, 2000);
 
       try {
-        const RTCPC = window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection;
+        const RTCPC = window.RTCPeerConnection || window.webkitRTCPeerConnection;
         if (!RTCPC) return done();
 
         pc = new RTCPC({
@@ -657,72 +682,63 @@ document.addEventListener('DOMContentLoaded', () => {
         }).catch(() => {});
 
         pc.onicecandidate = (event) => {
-          if (finished || !event || !event.candidate) return;
+          if (finished) return;
+          if (!event || !event.candidate) return done(); // gathering finished
           const candidate = event.candidate;
-
-          const directAddr = candidate.address || candidate.ip;
-          if (directAddr && !isPrivateOrBogonIP(directAddr)) {
-            discoveredIPs.add(directAddr.trim());
-          }
-
-          const candStr = candidate.candidate || '';
-          const tokens = candStr.trim().split(/\s+/);
-          if (tokens.length >= 5) {
-            const tokenIp = tokens[4];
-            if (tokenIp && !isPrivateOrBogonIP(tokenIp)) {
-              discoveredIPs.add(tokenIp.trim());
-            }
-          }
+          addCandidate(candidate.address || candidate.ip);
+          const tokens = (candidate.candidate || '').trim().split(/\s+/);
+          if (tokens.length >= 5) addCandidate(tokens[4]);
         };
-
-        setTimeout(() => {
-          done();
-        }, 900);
+        pc.onicegatheringstatechange = () => {
+          if (pc?.iceGatheringState === 'complete') done();
+        };
       } catch (err) {
         done();
       }
     });
   }
 
-  function runSecurityAudit(v4Info, v6Info, settings, shieldEffective, unverified = false) {
+  function runSecurityAudit(v4Info, v6Info, settings, shieldEffective, unverified = false, force = false) {
     if (!securityBar) return;
+    const isArmorOn = !settings || settings.enableAntiLeakShield !== false;
+    document.documentElement.dataset.leakhaloShield = isArmorOn ? 'enabled' : 'disabled';
     const enableWebRtc = !settings || settings.enableWebRtcScan !== false;
-    if (!enableWebRtc) {
-      currentAuditId++;
-      if (activeProbePC) {
-        try { activeProbePC.close(); } catch (e) {}
-        activeProbePC = null;
-      }
-      setWebRTCState('disabled');
-      return;
-    }
+    const balanced = settings?.antiLeakPolicy === 'default_public_interface_only';
+    // Re-checked only when something that affects WebRTC changed (not for a finished location
+    // lookup or an appearance setting), so a running check is not cut short.
+    const signature = [canonicalIp(v4Info?.ip), canonicalIp(v6Info?.ip), enableWebRtc, isArmorOn, balanced, shieldEffective === true, unverified].join('|');
+    if (!force && signature === lastAuditSignature) return;
+    lastAuditSignature = signature;
 
     const auditId = ++currentAuditId;
     if (activeProbePC) {
       try { activeProbePC.close(); } catch (e) {}
       activeProbePC = null;
     }
-
-    const isArmorOn = !settings || settings.enableAntiLeakShield !== false;
-
-    if (isArmorOn) {
-      document.documentElement.dataset.leakhaloShield = 'enabled';
-      setWebRTCState(shieldEffective === true ? 'protected' : 'unknown');
+    if (!enableWebRtc) {
+      setWebRTCState('disabled');
       return;
     }
 
-    document.documentElement.dataset.leakhaloShield = 'disabled';
+    // Strict mode blocks the leak itself; Balanced still lets WebRTC use the default network, so
+    // that case is checked too.
+    if (isArmorOn && (!balanced || shieldEffective !== true || unverified)) {
+      setWebRTCState(shieldEffective === true ? 'protected' : 'unknown');
+      return;
+    }
     if (unverified) {
       setWebRTCState('unknown');
       return;
     }
-    setWebRTCState('probing');
+    if (!isArmorOn) setWebRTCState('probing');
 
     probeWebRTCLeaks(v4Info, v6Info).then((res) => {
       if (auditId !== currentAuditId) return;
-
+      const exitIp = [v4Info?.ip, v6Info?.ip].filter(Boolean).join(' / ');
       if (res.leaked && res.leakedIPs?.length) {
-        setWebRTCState('leak', { leakedIPs: res.leakedIPs, exitIp: v4Info?.ip });
+        setWebRTCState('leak', { leakedIPs: res.leakedIPs.map(shownIp), exitIp: [v4Info?.ip, v6Info?.ip].filter(Boolean).map(shownIp).join(' / '), balanced: isArmorOn });
+      } else if (isArmorOn) {
+        setWebRTCState('protected');
       } else if (res.verified) {
         setWebRTCState('clean');
       } else {
@@ -738,6 +754,7 @@ document.addEventListener('DOMContentLoaded', () => {
     for (const link of [v4MapBtn, v6MapBtn]) {
       link.classList.toggle('no-map', !showMap);
       if (!showMap) link.removeAttribute('href');
+      syncMapTitle(link);
     }
   }
 
@@ -751,11 +768,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // placeholder only by its country name and pending flag).
   function computeFingerprint(res) {
     const v4 = res.latestV4Info ? `${normalizeVal(res.latestV4Info.ip)}|${normalizeVal(res.latestV4Info.country)}|${res.latestV4Info.pending === true}|${normalizeVal(res.latestV4Info.countryCode).toUpperCase()}|${normalizeVal(res.latestV4Info.city)}|${normalizeVal(res.latestV4Info.region)}|${normalizeVal(res.latestV4Info.isp)}|${normalizeVal(res.latestV4Info.asn)}|${normalizeVal(res.latestV4Info.connectionType)}|${normalizeVal(res.latestV4Info.lat)}|${normalizeVal(res.latestV4Info.lon)}|${normalizeVal(res.latestV4Info.timezone)}` : 'none';
-    const v6 = res.latestV6Info ? `${normalizeVal(res.latestV6Info.ip)}|${normalizeVal(res.latestV6Info.country)}|${res.latestV6Info.pending === true}|${normalizeVal(res.latestV6Info.countryCode).toUpperCase()}|${normalizeVal(res.latestV6Info.city)}|${normalizeVal(res.latestV6Info.region)}|${normalizeVal(res.latestV6Info.isp)}|${normalizeVal(res.latestV6Info.asn)}|${normalizeVal(res.latestV6Info.connectionType)}|${normalizeVal(res.latestV6Info.lat)}|${normalizeVal(res.latestV6Info.lon)}` : 'none';
-    const settings = res.appSettings ? `${res.appSettings.enableAntiLeakShield !== false}_${res.appSettings.antiLeakPolicy || ''}_${res.appSettings.showMap !== false}_${res.appSettings.badgeMode || ''}_${res.appSettings.enableWebRtcScan !== false}_${res.appSettings.warnRouteDivergence === true}` : 'defaults';
+    const v6 = res.latestV6Info ? `${normalizeVal(res.latestV6Info.ip)}|${normalizeVal(res.latestV6Info.country)}|${res.latestV6Info.pending === true}|${normalizeVal(res.latestV6Info.countryCode).toUpperCase()}|${normalizeVal(res.latestV6Info.city)}|${normalizeVal(res.latestV6Info.region)}|${normalizeVal(res.latestV6Info.isp)}|${normalizeVal(res.latestV6Info.asn)}|${normalizeVal(res.latestV6Info.connectionType)}|${normalizeVal(res.latestV6Info.lat)}|${normalizeVal(res.latestV6Info.lon)}|${normalizeVal(res.latestV6Info.timezone)}` : 'none';
+    const settings = res.appSettings ? `${res.appSettings.enableAntiLeakShield !== false}_${res.appSettings.antiLeakPolicy || ''}_${res.appSettings.showMap !== false}_${res.appSettings.badgeMode || ''}_${res.appSettings.enableWebRtcScan !== false}_${res.appSettings.warnRouteDivergence === true}_${res.appSettings.maskIp === true}_${res.appSettings.showTimeZone === true}` : 'defaults';
     const d = res.routeDivergence;
     const route = d && Array.isArray(d.alts)
-      ? `${normalizeVal(d.primaryIp)}|${normalizeVal(d.primarySource)}|${d.alts.map(alt => `${normalizeVal(alt.source)}:${normalizeVal(alt.ip)}:${normalizeVal(alt.geo?.countryCode)}`).join(',')}`
+      ? `${normalizeVal(d.primaryIp)}|${normalizeVal(d.primarySource)}|${d.alts.map(alt => `${normalizeVal(alt.source)}:${normalizeVal(alt.ip)}:${normalizeVal(alt.geo?.countryCode)}:${normalizeVal(alt.geo?.country)}`).join(',')}`
       : 'none';
     return `${v4}__${v6}__${settings}__${res.isOffline === true}__${res.probeError === true}__${res.shieldEffective === true}__${route}__${res.v4Unverified === true}`;
   }
@@ -779,7 +796,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function loadData(forceRender = false) {
+  function loadData(forceRender = false, forceAudit = false) {
     if (!hasRenderedOnce) {
       loader.style.display = 'flex';
       content.style.display = 'none';
@@ -797,6 +814,11 @@ document.addEventListener('DOMContentLoaded', () => {
       hasRenderedOnce = true;
 
       const isOffline = res.isOffline === true;
+      maskIps = res.appSettings?.maskIp === true;
+      showTimeZone = res.appSettings?.showTimeZone === true;
+      maskToggleBtn?.setAttribute('aria-pressed', String(maskIps));
+      if (maskToggleBtn) maskToggleBtn.title = maskIps ? 'Show IP addresses' : 'Hide IP addresses (for screenshots)';
+      maskToggleBtn?.setAttribute('aria-label', maskIps ? 'Show IP addresses' : 'Hide IP addresses');
       const pulseDot = document.querySelector('.pulse-dot');
       const subbarLabel = document.querySelector('.subbar-label');
       if (isOffline) {
@@ -819,10 +841,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
       renderIPv4(res.latestV4Info || null, isOffline, res.probeError === true, !!res.latestV6Info);
       const checking = !isOffline && !res.probeError && !res.latestV4Info && !res.latestV6Info;
-      renderIPv6(res.latestV6Info || null, isOffline, checking, res.probeError === true);
+      renderIPv6(res.latestV6Info || null, isOffline, checking, res.probeError === true, res.latestV4Info || null);
       if (res.appSettings) applySettings(res.appSettings);
       checkSplitRouting(isOffline || res.probeError ? null : res.latestV4Info,
-        isOffline || res.probeError ? null : res.latestV6Info);
+        isOffline || res.probeError ? null : res.latestV6Info, res.v4Unverified === true);
       // The split-route card is opt-in (Settings); detection still keeps the main IP stable.
       const showRouteWarning = res.appSettings?.warnRouteDivergence === true;
       renderRouteDivergence(isOffline || res.probeError || !showRouteWarning ? null : res.routeDivergence, res.latestV4Info);
@@ -832,7 +854,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       // Without a fresh, verified public IP a WebRTC candidate cannot be judged as a leak.
       const unverified = isOffline || res.probeError === true || res.v4Unverified === true;
-      runSecurityAudit(res.latestV4Info, res.latestV6Info, res.appSettings, res.shieldEffective, unverified);
+      runSecurityAudit(res.latestV4Info, res.latestV6Info, res.appSettings, res.shieldEffective, unverified, forceAudit);
 
       updateTimestamp(res.lastCheckedAt || res.latestV4Info?.updatedAt || res.latestV6Info?.updatedAt);
 
@@ -856,6 +878,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (force) lastForcedCheckAt = Date.now();
     liveCheckInFlight = true;
     chrome.runtime.sendMessage({ type: 'CHECK_NETWORK', force }, (res) => {
+      void chrome.runtime.lastError; // the worker may restart between checks; the next one retries
       liveCheckInFlight = false;
       if (res?.data) loadData(false);
       if (forceAfterCurrentCheck) {
@@ -877,12 +900,12 @@ document.addEventListener('DOMContentLoaded', () => {
   navigator.connection?.addEventListener?.('change', onConnectionChange);
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && (changes.latestV4Info || changes.latestV6Info || changes.appSettings || changes.isOffline || changes.probeError || changes.shieldEffective || changes.routeDivergence || changes.v4Unverified)) {
+    if (area === 'local' && (changes.latestV4Info || changes.latestV6Info || changes.appSettings || changes.isOffline || changes.probeError || changes.shieldEffective || changes.routeDivergence || changes.v4Unverified || changes.lastCheckedAt)) {
       loadData(false);
     }
   });
 
-  window.addEventListener('unload', () => {
+  window.addEventListener('pagehide', () => {
     clearInterval(liveCheckTimer);
     currentAuditId++;
     if (activeProbePC) activeProbePC.close();

@@ -19,8 +19,8 @@
       <p class="coach-eyebrow" id="pinEyebrow">One last step</p>
       <h2 id="pinTitle">Pin LeakHalo to your toolbar</h2>
       <ol class="pin-steps">
-        <li><span class="step-dot" aria-hidden="true">1</span><span>Click <span class="kbd-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 16v-4h1a3 3 0 1 0 0-6h-1V4a2 2 0 0 0-2-2h-4v1a3 3 0 1 1-6 0V2H4a2 2 0 0 0-2 2v4h1a3 3 0 1 1 0 6H2v4a2 2 0 0 0 2 2h4v1a3 3 0 1 0 6 0v-1h4a2 2 0 0 0 2-2z"/></svg></span> <strong>Extensions</strong> in Chrome’s toolbar, up here</span></li>
-        <li><span class="step-dot" aria-hidden="true">2</span><span>Click the <span class="kbd-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg></span> <strong>pin</strong> next to LeakHalo</span></li>
+        <li><span class="step-dot" aria-hidden="true">1</span><span>Click <span class="kbd-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M20 16v-4h1a3 3 0 1 0 0-6h-1V4a2 2 0 0 0-2-2h-4v1a3 3 0 1 1-6 0V2H4a2 2 0 0 0-2 2v4h1a3 3 0 1 1 0 6H2v4a2 2 0 0 0 2 2h4v1a3 3 0 1 0 6 0v-1h4a2 2 0 0 0 2-2z"/></svg></span> <strong>Extensions</strong> in Chrome’s toolbar, up here.</span></li>
+        <li><span class="step-dot" aria-hidden="true">2</span><span>Click the <span class="kbd-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 17v5M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg></span> <strong>pin</strong> next to LeakHalo.</span></li>
         <li id="pinFinalStep"><span class="step-dot" aria-hidden="true">3</span><span>Your flag stays in the toolbar. Click it any time.</span></li>
       </ol>
 
@@ -50,25 +50,26 @@
         <p class="eyebrow"><span class="live-dot" aria-hidden="true"></span>LeakHalo is running</p>
         <h1 id="heroTitle">This is how<br><span class="grad">the web sees you.</span></h1>
 
-        <section id="connectionCard" class="connection" aria-labelledby="connectionTitle" aria-live="polite" aria-atomic="true" data-state="loading">
+        <section id="connectionCard" class="connection" aria-labelledby="connectionTitle" data-state="loading">
           <h2 id="connectionTitle" class="visually-hidden">Your connection right now</h2>
           <div class="where">
             <img id="connectionFlag" class="flag" src="../assets/icons/icon48.png" width="72" height="54" alt="">
             <div class="where-text">
-              <strong id="connectionCountry">Checking your connection…</strong>
+              <strong id="connectionCountry" aria-live="polite">Checking your connection…</strong>
               <span id="connectionCity">Waiting for the first network check</span>
             </div>
           </div>
           <div class="ip-row">
-            <span class="ip-label">Public IP</span>
+            <span class="ip-label" id="primaryIpLabel">Public IP</span>
             <span id="connectionV4" class="ip mono skeleton">Checking…</span>
             <button id="copyIp" class="copy" type="button" aria-label="Copy IP address"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg><span id="copyLabel">Copy</span></button>
           </div>
           <dl class="facts">
             <div><dt>Network</dt><dd id="connectionNetwork" class="skeleton">Checking…</dd></div>
-            <div><dt>IPv6</dt><dd><span id="connectionV6" class="mono skeleton">Checking…</span><span id="connectionV6Location" class="sub"></span></dd></div>
+            <div><dt id="secondaryFactLabel">IPv6</dt><dd><span id="connectionV6" class="mono skeleton">Checking…</span><span id="connectionV6Location" class="sub"></span></dd></div>
             <div><dt>WebRTC</dt><dd><span class="policy-label"><span class="policy-dot" aria-hidden="true"></span><span id="connectionPolicy">Checking WebRTC policy…</span></span></dd></div>
           </dl>
+          <span id="copyAnnouncer" class="visually-hidden" role="status" aria-live="polite"></span>
           <p class="fineprint">Approximate IP location. LeakHalo is not a VPN; it shows what your connection reveals.</p>
         </section>
 
@@ -107,13 +108,13 @@
           <span class="switch"><input id="setAntiLeakShield" type="checkbox" role="switch" aria-describedby="shieldDescription" checked disabled><span class="track" aria-hidden="true"></span></span>
         </label>
       </div>
-      <p class="privacy-line">Your IP is sent only to the IP and location providers and LeakHalo’s no-log server listed in the <a href="../privacy.html">privacy policy</a>. No account, analytics or ads. With WebRTC Armor off, the popup’s WebRTC check may also contact Google’s STUN server.</p>
+      <p class="privacy-line">Your IP is sent only to the IP and location providers and LeakHalo’s no-log server listed in the <a href="../privacy.html" target="_blank" rel="noopener noreferrer">privacy policy</a>. No account, analytics or ads. With WebRTC Armor off, the popup’s WebRTC check may also contact Google’s STUN server.</p>
     </section>
   </main>
 
   <footer class="footer">
     <span class="publisher"><img src="../assets/brand/salman-labs.png" width="22" height="22" alt="">By <strong>SLMN LABS</strong> · v<span id="appVersion">—</span></span>
-    <nav aria-label="Footer"><a href="../options/options.html" data-options>Settings</a><a href="../privacy.html">Privacy policy</a></nav>
+    <nav aria-label="Footer"><a href="../options/options.html" data-options>Settings</a><a href="../privacy.html" target="_blank" rel="noopener noreferrer">Privacy policy</a></nav>
   </footer>
 </body>
 </html>

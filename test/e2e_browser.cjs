@@ -251,7 +251,7 @@ async function launch({ mocked, port }) {
     const opt = await context.newPage();
     try {
       await opt.goto(`chrome-extension://${id}/options/options.html`);
-      await opt.waitForFunction(() => document.getElementById('saveToast').textContent === 'Saved in this browser');
+      await opt.waitForFunction(() => document.getElementById('saveToast').dataset.state === 'ready');
       const original = (await storage('appSettings')).appSettings || {};
       const pairs = [
         ['setNotifications', 'enableNotifications'], ['setFastDetection', 'enableFastDetection'], ['setAntiLeakShield', 'enableAntiLeakShield']
@@ -285,9 +285,10 @@ async function launch({ mocked, port }) {
         }, mode);
         await page.goto(`chrome-extension://${id}/welcome/welcome.html`);
         await page.click('#openPopup');
-        assert(await page.locator('#popupHelp').textContent() === 'Click the LeakHalo icon in your toolbar', 'missing popup help');
+        // Not pinned yet, so the help points at the Extensions menu rather than the toolbar.
+        assert(/Pin LeakHalo from the Extensions menu/.test(await page.locator('#popupHelp').textContent()), 'missing popup help');
         if (mode === 'unavailable') {
-          assert((await welcomeState(page)).pinned === 'false', 'unavailable API claimed success');
+          assert((await welcomeState(page)).pinned === 'unknown', 'unavailable API claimed success');
         } else {
           await page.evaluate(mode => { window.__pin = true; if (mode === 'event') window.__pinChanged({ isOnToolbar: true }); }, mode);
           await waitFor(async () => (await welcomeState(page)).pinned === 'true', 5_000, `${mode} pin detection`);
@@ -442,7 +443,7 @@ async function launch({ mocked, port }) {
     assert(/Sites see different IPs/.test(a.title) && /31\.171\.101\.166 \(AZ\)/.test(a.title) && a.badge === '!', JSON.stringify(a));
     const n = await notes();
     assert(n.filter(x => /different IPs/.test(x.title)).length === 1, JSON.stringify(n));
-    assert(!n.some(x => /IP Changed/.test(x.title)), 'unexpected IP-change notification: ' + JSON.stringify(n));
+    assert(!n.some(x => /IP Changed|Country changed/.test(x.title)), 'unexpected IP-change notification: ' + JSON.stringify(n));
   });
   await check('Split routing ends: warning clears on the next check', async () => {
     net.indep = IR;
@@ -460,7 +461,7 @@ async function launch({ mocked, port }) {
     const dt = Date.now() - t0;
     await sleep(4_000);
     const n = (await notes()).slice(before);
-    assert(n.length === 1 && /IP Changed/.test(n[0].title) && /46\.100\.233\.74 to 203\.0\.113\.44/.test(n[0].message), JSON.stringify(n));
+    assert(n.length === 1 && /Country changed: IR → DE/.test(n[0].title) && /46\.100\.233\.74 to 203\.0\.113\.44/.test(n[0].message), JSON.stringify(n));
     console.log(`      detected in ${(dt / 1000).toFixed(1)} s`);
     await shot(popup, '03-changed-germany');
   });
@@ -495,7 +496,7 @@ async function launch({ mocked, port }) {
     net.hang.add('ipwho.is');
     net.edge = PSIP; net.loc = ''; net.indep = PSIP; // no country from Cloudflare either
     await probe();
-    const s = await waitFor(async () => { const x = await popupState(popup); return x.ip === PSIP && x.country !== 'Locating...' && x; }, 40_000, 'placeholder to resolve');
+    const s = await waitFor(async () => { const x = await popupState(popup); return x.ip === PSIP && !/^Locating/.test(x.country) && x; }, 40_000, 'placeholder to resolve');
     assert(s.country === 'Unknown Country', JSON.stringify(s));
     net.hang.clear();
   });
@@ -503,7 +504,7 @@ async function launch({ mocked, port }) {
     ['ipwho.is', 'get.geojs.io', 'ipinfo.io'].forEach(h => net.hang.add(h));
     net.edge = IR; net.loc = 'IR'; net.indep = IR;
     await probe();
-    const s = await waitFor(async () => { const x = await popupState(popup); return x.ip === IR && x.country !== 'Locating...' && x; }, 30_000, 'country');
+    const s = await waitFor(async () => { const x = await popupState(popup); return x.ip === IR && !/^Locating/.test(x.country) && x; }, 30_000, 'country');
     assert(s.country === 'Iran' && /flag-ir\.png$/.test(s.flag), JSON.stringify(s));
     await shot(popup, '04a-geo-filtered');
     net.hang.clear();
@@ -718,12 +719,23 @@ async function launch({ mocked, port }) {
     const tz = () => popup.evaluate(() => ({ shown: getComputedStyle(document.getElementById('v4TzRow')).display !== 'none', text: document.getElementById('v4Tz').textContent, cls: document.getElementById('v4Tz').className }));
     net.edge = IR; net.loc = 'IR'; net.indep = IR; net.v6 = null;
     await waitFor(async () => (await popupState(popup)).country === 'Iran', 15_000, 'Iran');
+    await sleep(1_000);
+    assert(!(await tz()).shown, 'the time-zone row is off by default');
+    await settings({ showTimeZone: true });
     const a = await waitFor(async () => { const x = await tz(); return x.shown && /tz-match/.test(x.cls) && x; }, 8_000, 'matching time zone');
     assert(a.text === 'Asia/Tehran', JSON.stringify(a));
     net.edge = DE; net.loc = 'DE'; net.indep = DE;
     await waitFor(async () => (await popupState(popup)).country === 'Germany', 15_000, 'Germany');
     const b = await waitFor(async () => { const x = await tz(); return /tz-mismatch/.test(x.cls) && x; }, 8_000, 'time zone warning');
     assert(b.text === 'Europe/Berlin · your clock Asia/Tehran', JSON.stringify(b));
+    await settings({ showTimeZone: false });
+    await waitFor(async () => !(await tz()).shown, 8_000, 'time-zone row hidden again');
+    // Screenshot mode: the address is partly hidden on screen but still copies in full.
+    await popup.click('#maskToggleBtn');
+    const masked = await waitFor(async () => { const t = await popup.locator('#v4Ip').textContent(); return /•••/.test(t) && t; }, 8_000, 'masked IP');
+    assert(masked === '203.0.•••.•••' && await popup.locator('#v4IpRow').getAttribute('data-ip') === DE, masked);
+    await popup.click('#maskToggleBtn');
+    await waitFor(async () => (await popup.locator('#v4Ip').textContent()) === DE, 8_000, 'IP shown again');
     await popup.close();
   });
   await check('Popup states: unknown country, IPv6-only network, map links off, last known result', async () => {
@@ -748,7 +760,7 @@ async function launch({ mocked, port }) {
       // Same city and region are shown once.
       net.edge = IR; net.indep = IR; net.loc = 'IR';
       await probe();
-      const iran = await waitFor(async () => { const x = await ui(); return x.country === 'Iran' && x; }, 15_000, 'Iran');
+      const iran = await waitFor(async () => { const x = await ui(); return x.country === 'Iran' && x.city !== 'Looking up location…' && x; }, 15_000, 'Iran');
       assert(iran.city === 'Tehran', `city ${iran.city}`);
       // Map links off: the place name stays, the link and pin go.
       await settings({ showMap: false });

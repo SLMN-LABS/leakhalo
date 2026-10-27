@@ -166,7 +166,7 @@ async function runAllTests() {
     for (const id of ['setNotifications', 'setFastDetection', 'setAntiLeakShield']) {
       assert(welcomeHtml.includes(`for="${id}"`));
     }
-    assert(welcomeCss.includes('prefers-color-scheme: dark'));
+    assert(welcomeCss.includes('color-scheme: dark'), 'the welcome page is always dark');
     assert(welcomeCss.includes('prefers-reduced-motion: reduce'));
     assert(welcomeCss.includes(':focus-visible'));
     for (const match of welcomeJs.matchAll(/(?:byId|getElementById)\('([^']+)'\)/g)) {
@@ -277,8 +277,8 @@ kex=X25519
   });
 
   test('Privacy shield uses clear({}) when inactive', () => {
-    assert(bgCode.includes('chrome.privacy.network.webRTCIPHandlingPolicy.clear({})'), 'Must clear webRTC policy on disable');
-    assert(bgCode.includes('chrome.privacy.network.networkPredictionEnabled.clear({})'), 'Must clear network prediction policy on disable');
+    assert(bgCode.includes('network.webRTCIPHandlingPolicy.clear({})'), 'Must clear webRTC policy on disable');
+    assert(bgCode.includes('network.networkPredictionEnabled.clear({})'), 'Must clear network prediction policy on disable');
   });
 
   console.log('\n🖥️ [4/6] Popup Controller & HTML DOM Tests:');
@@ -529,7 +529,7 @@ kex=X25519
       assert(options.includes(`href="${url}" target="_blank" rel="noopener noreferrer"`), `missing safe link to ${url}`);
     }
     assert(options.includes('id="setNotifyIPv6"') && fs.readFileSync(path.join(ROOT, 'options/options.js'), 'utf8').includes('notifyIPv6: setNotifyIPv6'));
-    assert(bgCode.includes("stored.appSettings?.notifyIPv6 !== false"), 'IPv6 alerts must honour the switch');
+    assert(bgCode.includes("stored.appSettings?.notifyIPv6 === false"), 'IPv6 alerts must honour the switch');
   });
 
   test('Toolbar: offline is the grey icon without badge text; provider errors show ERR', () => {

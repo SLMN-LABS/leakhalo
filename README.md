@@ -64,8 +64,10 @@ WebRTC can expose your real IP even behind a VPN. One switch applies Chrome’s 
 | 🎯 **Stable answer** | IPv4 is checked from two independent vantage points at once, so the displayed IP and country stay steady even when your network routes some sites differently. An optional warning tells you when that happens. |
 | 🧭 **Honest location** | IP geolocation is approximate, and LeakHalo says so. If one location service fails, the next one answers. |
 | 📴 **Offline at a glance** | Lose the connection and the toolbar icon turns grey within about a second; it comes back within seconds when you are online again. |
-| 🕐 **Time-zone hint** | Sites can compare your clock with your IP’s location. The popup warns when your browser’s time zone does not match the IP’s, a common way to spot a VPN. |
-| 🪶 **Light** | No frameworks, no remote code. A background check about every 30 seconds, every 3 seconds while the popup is open. |
+| 🕐 **Time-zone hint** | Sites can compare your clock with your IP’s location. Turn it on in Settings and the popup warns when your browser’s time zone does not match the IP’s, a common way to spot a VPN. |
+| 🚨 **Country alerts** | A change of country, such as a VPN that dropped, gets its own alert, apart from routine IP changes. |
+| 🙈 **Screenshot mode** | One click hides most of each IP in the popup for screenshots and streams; copying still copies the full address. |
+| 🪶 **Light** | No frameworks, no remote code. A background check about every 30 seconds; while the popup is open, every 3 seconds, or every 10 while the instant-detection connection is up. |
 | 🎨 **Yours** | Toolbar shows a flag, a flag with a country code, or the plain LeakHalo icon. Map links are optional. |
 
 ## Install

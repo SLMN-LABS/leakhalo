@@ -3,13 +3,16 @@ let activeProbePromise = null;
 let queuedForceProbePromise = null;
 const PROBE_INTERVAL_MS = 30_000;
 const POPUP_PROBE_INTERVAL_MS = 3_000;
+let POPUP_PROBE_WITH_CHANNEL_MS = 10_000;
 const GEO_RETRY_INTERVAL_MS = 15 * 60_000;
 const MANUAL_GEO_REFRESH_MS = 5 * 60_000;
+const ALT_GEO_MANUAL_RETRY_MS = 30_000;
 const GEO_MEMORY_CACHE_MS = 30 * 60_000;
 // Upper bounds so no single step can leave the extension stuck (e.g. on "Locating...").
 let GEO_LOOKUP_TIMEOUT_MS = 15_000;
 let PROBE_WATCHDOG_MS = 30_000;
 let TOOLBAR_WAIT_MS = 5_000;
+let NOTIFY_GEO_WAIT_MS = 2_500;
 let probeGeneration = 0;
 // While a check reports "offline", retry soon so the return of the connection shows within seconds
 // (the alarm alone would take up to 30 s), then every 15 s for as long as the worker runs.
@@ -30,133 +33,132 @@ const providerCooldownReady = chrome.storage.local.get('providerCooldowns').then
   if (saved && typeof saved === 'object') Object.assign(providerCooldowns, saved);
 }).catch(() => {});
 
-async function loadFlagBitmap(countryCode) {
-  if (!/^[a-z]{2}$/i.test(countryCode || '')) return null;
+// Keeps a provider out of rotation until `until`, and drops cooldowns that have run out.
+async function markProviderCooldown(origin, delayMs) {
+  const now = Date.now();
+  if (origin) providerCooldowns[origin] = now + delayMs;
+  for (const [key, until] of Object.entries(providerCooldowns)) if (!(until > now)) delete providerCooldowns[key];
+  await chrome.storage.local.set({ providerCooldowns: { ...providerCooldowns } }).catch(() => {});
+}
+
+async function loadBitmap(path) {
   try {
-    const url = chrome.runtime.getURL(`assets/flags/flag-${countryCode.toLowerCase()}.png`);
-    const response = await fetch(url);
+    const response = await fetch(chrome.runtime.getURL(path));
     if (!response.ok) return null;
-    const blob = await response.blob();
-    return await createImageBitmap(blob);
+    return await createImageBitmap(await response.blob());
   } catch (e) {
     return null;
   }
 }
 
-async function renderSplitFlagImageData(code1, code2, size = 48) {
+function loadFlagBitmap(countryCode) {
+  if (!/^[a-z]{2}$/i.test(countryCode || '')) return Promise.resolve(null);
+  return loadBitmap(`assets/flags/flag-${countryCode.toLowerCase()}.png`);
+}
+
+function iconCanvas(size) {
+  if (typeof OffscreenCanvas !== 'undefined') return new OffscreenCanvas(size, size);
+  if (typeof document === 'undefined') return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  return canvas;
+}
+
+const ICON_SIZES = [16, 32, 48];
+
+// Both flags are decoded once and drawn at every toolbar size; the bitmaps are released after.
+async function renderSplitFlagIcon(code1, code2) {
+  const [bitmap1, bitmap2] = await Promise.all([loadFlagBitmap(code1), loadFlagBitmap(code2)]);
   try {
-    const [bitmap1, bitmap2] = await Promise.all([
-      loadFlagBitmap(code1),
-      loadFlagBitmap(code2)
-    ]);
-
     if (!bitmap1 || !bitmap2) return null;
-
-    let canvas;
-    if (typeof OffscreenCanvas !== 'undefined') {
-      canvas = new OffscreenCanvas(size, size);
-    } else if (typeof document !== 'undefined') {
-      canvas = document.createElement('canvas');
-      canvas.width = size;
-      canvas.height = size;
-    } else {
-      return null;
+    const imageData = {};
+    for (const size of ICON_SIZES) {
+      const canvas = iconCanvas(size);
+      if (!canvas) return null;
+      const ctx = canvas.getContext('2d');
+      const splitX = Math.round(size / 2);
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, splitX, size);
+      ctx.clip();
+      ctx.drawImage(bitmap1, 0, 0, size, size);
+      ctx.restore();
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(splitX, 0, size - splitX, size);
+      ctx.clip();
+      ctx.drawImage(bitmap2, 0, 0, size, size);
+      ctx.restore();
+      // A whole-pixel divider (fillRect, not a half-pixel stroke) drawn only over the flags
+      // themselves, so it stays sharp at 16 and 32 px and never runs past rounded corners.
+      const width = Math.max(1, Math.round(size / 24));
+      ctx.globalCompositeOperation = 'source-atop';
+      ctx.fillStyle = '#0b0e14';
+      ctx.fillRect(splitX - Math.floor(width / 2), 0, width, size);
+      imageData[size] = ctx.getImageData(0, 0, size, size);
     }
-    const ctx = canvas.getContext('2d');
-
-    const scale = size / 48;
-    const splitX = Math.round(24 * scale);
-    // Square flags fill the whole icon, so the divider runs full height.
-    const topY = 0;
-    const bottomY = size;
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, 0, splitX, size);
-    ctx.clip();
-    ctx.drawImage(bitmap1, 0, 0, size, size);
-    ctx.restore();
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(splitX, 0, size - splitX, size);
-    ctx.clip();
-    ctx.drawImage(bitmap2, 0, 0, size, size);
-    ctx.restore();
-
-    ctx.strokeStyle = '#0b0e14';
-    ctx.lineWidth = Math.max(1, Math.round(2 * scale));
-    ctx.beginPath();
-    ctx.moveTo(splitX, topY);
-    ctx.lineTo(splitX, bottomY);
-    ctx.stroke();
-
-    return ctx.getImageData(0, 0, size, size);
+    return { imageData };
   } catch (err) {
     return null;
+  } finally {
+    bitmap1?.close?.();
+    bitmap2?.close?.();
   }
 }
 
-async function renderDisconnectedIcon(size = 48) {
+// The grey offline icon never changes, so it is drawn once per worker and reused.
+let disconnectedIcon = null;
+async function renderDisconnectedIcon() {
+  if (disconnectedIcon) return disconnectedIcon;
+  const bitmap = await loadBitmap('assets/icons/icon48.png');
   try {
-    const url = chrome.runtime.getURL('assets/icons/icon48.png');
-    const response = await fetch(url);
-    const blob = await response.blob();
-    const bitmap = await createImageBitmap(blob);
-
-    let canvas;
-    if (typeof OffscreenCanvas !== 'undefined') {
-      canvas = new OffscreenCanvas(size, size);
-    } else if (typeof document !== 'undefined') {
-      canvas = document.createElement('canvas');
-      canvas.width = size;
-      canvas.height = size;
-    } else {
-      return null;
+    if (!bitmap) return null;
+    const imageData = {};
+    for (const size of ICON_SIZES) {
+      const canvas = iconCanvas(size);
+      if (!canvas) return null;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, size, size);
+      const imgData = ctx.getImageData(0, 0, size, size);
+      const d = imgData.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const avg = Math.round(d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114);
+        d[i] = avg;
+        d[i + 1] = avg;
+        d[i + 2] = avg;
+        d[i + 3] = Math.round(d[i + 3] * 0.45);
+      }
+      imageData[size] = imgData;
     }
-
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(bitmap, 0, 0, size, size);
-    const imgData = ctx.getImageData(0, 0, size, size);
-    const d = imgData.data;
-
-    for (let i = 0; i < d.length; i += 4) {
-      const avg = Math.round(d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114);
-      d[i] = avg;
-      d[i + 1] = avg;
-      d[i + 2] = avg;
-      d[i + 3] = Math.round(d[i + 3] * 0.45);
-    }
-    ctx.putImageData(imgData, 0, 0);
-    return ctx.getImageData(0, 0, size, size);
+    disconnectedIcon = { imageData };
+    return disconnectedIcon;
   } catch (e) {
     return null;
+  } finally {
+    bitmap?.close?.();
   }
 }
 
-const DEFAULT_ACTION_ICON = { path: { "16": "/assets/icons/icon16.png", "48": "/assets/icons/icon48.png" } };
+const DEFAULT_ACTION_ICON = { path: { "16": "/assets/icons/icon16.png", "32": "/assets/icons/icon32.png", "48": "/assets/icons/icon48.png" } };
 let toolbarRenderSeq = 0;
 let toolbarApplyChain = Promise.resolve();
+// What the toolbar shows now, so an unchanged state (most checks) costs no rendering or API calls.
+let appliedToolbarKey = '';
 
-async function renderedActionIcon(render) {
-  const [img16, img32, img48] = await Promise.all([render(16), render(32), render(48)]);
-  if (!img48) return null;
-  const imageData = { "48": img48 };
-  if (img16) imageData["16"] = img16;
-  if (img32) imageData["32"] = img32;
-  return { imageData };
-}
+// Badge text colours chosen for contrast on each badge background.
+const BADGE_TEXT = { '#f59e0b': '#192b35', '#0284c7': '#ffffff', '#64748b': '#ffffff' };
 
-// Works out icon, badge and title for the current state without touching the toolbar.
+// Works out icon, badge and title for the current state without rendering anything: the icon is
+// described ({ kind, codes }) so an unchanged state can be recognised before any drawing.
 async function planToolbar(v4Info, v6Info, isOffline, probeError) {
   const res = await chrome.storage.local.get(['appSettings', 'routeDivergence']);
   const badgeMode = (res.appSettings && res.appSettings.badgeMode) ? res.appSettings.badgeMode : 'flag';
 
   // Failure states take precedence over cached locations: a stale flag must not look verified.
   if (isOffline || probeError || (!v4Info?.ip && !v6Info?.ip)) {
-    const icon = await renderedActionIcon(renderDisconnectedIcon).catch(() => null);
     return {
-      icon: icon || DEFAULT_ACTION_ICON,
+      icon: { kind: 'grey' },
       // Offline is the grey icon alone; only a provider error adds a badge.
       badgeText: probeError ? 'ERR' : '',
       badgeColor: probeError ? '#f59e0b' : '#64748b',
@@ -189,24 +191,20 @@ async function planToolbar(v4Info, v6Info, isOffline, probeError) {
   if (isV4V6Split) {
     lines.push('⚠️ Split Route Detected!', `IPv4: ${v4Info.country} (${v4Code}) | IPv6: ${v6Info.country} (${v6Code})`);
   }
-  lines.push(primaryCode ? `Location: ${primaryName} (${primaryCode})` : `LeakHalo: location unknown · ${v4Info?.ip || v6Info?.ip}`);
+  const locating = v4Info?.pending === true || (!v4Info?.ip && v6Info?.pending === true);
+  lines.push(primaryCode ? `Location: ${primaryName} (${primaryCode})`
+    : `LeakHalo: ${locating ? 'locating…' : 'location unknown'} · ${v4Info?.ip || v6Info?.ip}`);
   const title = lines.join('\n');
   const warning = !!divergence || isV4V6Split;
 
   if (badgeMode === 'off') {
-    return { icon: DEFAULT_ACTION_ICON, badgeText: divergence ? '!' : '', badgeColor: '#f59e0b', title };
+    return { icon: { kind: 'default' }, badgeText: divergence ? '!' : '', badgeColor: '#f59e0b', title };
   }
 
   // Two flags: IPv4/IPv6 split first, otherwise a divergence whose routes are in different countries.
   const secondCode = isV4V6Split ? v6Code : (v4Code ? altCode : '');
-  let icon = null;
-  if (primaryCode && secondCode) {
-    icon = await renderedActionIcon(size => renderSplitFlagImageData(v4Code || primaryCode, secondCode, size)).catch(() => null);
-  }
-  if (!icon && primaryCode) {
-    const flagPath = `/assets/flags/flag-${primaryCode.toLowerCase()}.png`;
-    icon = { path: { "16": flagPath, "32": flagPath, "48": flagPath } };
-  }
+  const icon = primaryCode && secondCode ? { kind: 'split', codes: [v4Code || primaryCode, secondCode] }
+    : primaryCode ? { kind: 'flag', codes: [primaryCode] } : { kind: 'default' };
 
   let badgeText = '';
   let badgeColor = null;
@@ -218,7 +216,20 @@ async function planToolbar(v4Info, v6Info, isOffline, probeError) {
     badgeText = '!';
     badgeColor = '#f59e0b';
   }
-  return { icon: icon || DEFAULT_ACTION_ICON, badgeText, badgeColor, title };
+  return { icon, badgeText, badgeColor, title };
+}
+
+async function renderPlannedIcon(icon) {
+  if (icon.kind === 'grey') return (await renderDisconnectedIcon().catch(() => null)) || DEFAULT_ACTION_ICON;
+  if (icon.kind === 'split') {
+    const split = await renderSplitFlagIcon(icon.codes[0], icon.codes[1]).catch(() => null);
+    if (split) return split;
+  }
+  if (icon.kind === 'split' || icon.kind === 'flag') {
+    const flagPath = `/assets/flags/flag-${icon.codes[0].toLowerCase()}.png`;
+    return { path: { "16": flagPath, "32": flagPath, "48": flagPath } };
+  }
+  return DEFAULT_ACTION_ICON;
 }
 
 // Renders are planned concurrently but applied one at a time, and a plan superseded by a newer
@@ -229,14 +240,21 @@ async function updateToolbarDisplay(v4Info, v6Info, isOffline = false, probeErro
   if (!plan) return;
   toolbarApplyChain = toolbarApplyChain.catch(() => {}).then(async () => {
     if (seq !== toolbarRenderSeq) return;
+    const key = JSON.stringify(plan);
+    if (key === appliedToolbarKey) return;
+    appliedToolbarKey = '';
     try {
-      await chrome.action.setIcon(plan.icon);
+      await chrome.action.setIcon(await renderPlannedIcon(plan.icon));
     } catch (e) {
       await chrome.action.setIcon(DEFAULT_ACTION_ICON).catch(() => {});
     }
     await chrome.action.setBadgeText({ text: plan.badgeText });
-    if (plan.badgeColor) await chrome.action.setBadgeBackgroundColor({ color: plan.badgeColor });
+    if (plan.badgeColor) {
+      await chrome.action.setBadgeBackgroundColor({ color: plan.badgeColor });
+      await chrome.action.setBadgeTextColor?.({ color: BADGE_TEXT[plan.badgeColor] || '#ffffff' });
+    }
     await chrome.action.setTitle({ title: plan.title });
+    appliedToolbarKey = key;
   });
   return toolbarApplyChain;
 }
@@ -268,18 +286,29 @@ async function deliverIPChangeNotification(type, oldIp, newGeo) {
     const now = Date.now();
     // Throttled per address family, so an IPv4 and an IPv6 change in the same check both arrive.
     const throttleKey = `lastNotifTime${type}`;
-    const stored = await chrome.storage.local.get([throttleKey, 'appSettings']);
+    const stored = await chrome.storage.local.get([throttleKey, 'appSettings', 'announcedCountries']);
     const enableNotifs = stored.appSettings ? stored.appSettings.enableNotifications !== false : true;
-    if (!enableNotifs) return true;
+    const newCode = normalizeCountryCode(newGeo.countryCode);
+    const oldCode = normalizeCountryCode(stored.announcedCountries?.[type]);
+    if (!enableNotifs) {
+      if (newCode) await rememberAnnouncedCountry(type, newCode);
+      return true;
+    }
     const lastNotif = stored[throttleKey] || 0;
     if (now - lastNotif < 4000) return false;
 
-    const notifId = `ip_change_${type}_${now}`;
-    const flagEmoji = normalizeCountryCode(newGeo.countryCode) ? ` (${normalizeCountryCode(newGeo.countryCode)})` : '';
-    const knownCountry = normalizeCountryCode(newGeo.countryCode) ? ` in ${newGeo.country}` : '';
-    const message = oldIp
-      ? `Changed from ${oldIp} to ${newGeo.ip}${knownCountry}`
-      : `Connected with ${newGeo.ip}${knownCountry}`;
+    // One notification per kind: a newer alert replaces the older one instead of piling up.
+    const notifId = `leakhalo_ip_change_${type}`;
+    // A new country is what matters most (a VPN that dropped, say), so it gets its own alert;
+    // a new address in the same country is a routine change.
+    const countryChanged = !!(oldCode && newCode && oldCode !== newCode);
+    const flagEmoji = newCode ? ` (${newCode})` : '';
+    const knownCountry = newCode ? ` in ${newGeo.country}` : '';
+    const message = countryChanged
+      ? `Changed from ${oldIp} to ${newGeo.ip}: ${getFullCountryName(oldCode, '')} → ${newGeo.country}`
+      : oldIp
+        ? `Changed from ${oldIp} to ${newGeo.ip}${knownCountry}`
+        : `Connected with ${newGeo.ip}${knownCountry}`;
 
     const iconUrl = normalizeCountryCode(newGeo.countryCode)
       ? chrome.runtime.getURL(`assets/flags/flag-${newGeo.countryCode.toLowerCase()}.png`)
@@ -288,29 +317,40 @@ async function deliverIPChangeNotification(type, oldIp, newGeo) {
     const delivered = await createNotification(notifId, {
       type: 'basic',
       iconUrl: iconUrl,
-      title: `🌍 ${type} IP Changed${flagEmoji}`,
+      title: countryChanged ? `🚨 Country changed: ${oldCode} → ${newCode}` : `🌍 ${type} IP Changed${flagEmoji}`,
       message: message,
       priority: 2
     });
-    if (delivered) await chrome.storage.local.set({ [throttleKey]: now });
+    if (delivered) {
+      await chrome.storage.local.set({ [throttleKey]: now });
+      if (newCode) await rememberAnnouncedCountry(type, newCode);
+    }
     return delivered;
   } catch (e) {
     return false;
   }
 }
 
+// The country of the address the user was last told about, per family, so an alert can say
+// whether the country changed.
+async function rememberAnnouncedCountry(type, code) {
+  const { announcedCountries } = await chrome.storage.local.get('announcedCountries');
+  if (announcedCountries?.[type] !== code) await chrome.storage.local.set({ announcedCountries: { ...(announcedCountries || {}), [type]: code } });
+}
+
+// Resolves true once the divergence counts as announced (shown, or notifications are off). False
+// while the opt-in warning is off or the alert was throttled or failed, so it is retried later.
 async function sendRouteDivergenceNotification(divergence, primaryInfo) {
   try {
     const now = Date.now();
-    // Separate throttle: an IP-change notification a moment earlier must not swallow this one,
-    // which fires only once per confirmed divergence.
+    // Separate throttle: an IP-change notification a moment earlier must not swallow this one.
     const stored = await chrome.storage.local.get(['lastRouteNotifTime', 'appSettings']);
-    if (stored.appSettings?.warnRouteDivergence !== true) return; // warning is opt-in
-    if (now - (stored.lastRouteNotifTime || 0) < 4000) return;
-    if (stored.appSettings && stored.appSettings.enableNotifications === false) return;
+    if (stored.appSettings?.warnRouteDivergence !== true) return false; // warning is opt-in
+    if (stored.appSettings && stored.appSettings.enableNotifications === false) return true;
+    if (now - (stored.lastRouteNotifTime || 0) < 4000) return false;
     const where = (ip, info) => normalizeCountryCode(info?.countryCode) ? `${ip} (${info.country})` : ip;
     const alts = divergence.alts.map(alt => `${alt.source}: ${where(alt.ip, alt.geo)}`).join('\n');
-    const delivered = await createNotification(`route_divergence_${now}`, {
+    const delivered = await createNotification('leakhalo_route_divergence', {
       type: 'basic',
       iconUrl: chrome.runtime.getURL('assets/icons/icon48.png'),
       title: '⚠️ Sites see different IPs',
@@ -318,9 +358,16 @@ async function sendRouteDivergenceNotification(divergence, primaryInfo) {
       priority: 2
     });
     if (delivered) await chrome.storage.local.set({ lastRouteNotifTime: now });
-  } catch (e) {}
+    return delivered;
+  } catch (e) {
+    return false;
+  }
 }
 
+chrome.notifications?.onClicked?.addListener((id) => chrome.notifications.clear(id));
+
+// Answers from IP and location services are a few hundred bytes; anything far larger is not one.
+const MAX_RESPONSE_BYTES = 64 * 1024;
 async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
   await providerCooldownReady;
   const origin = new URL(url).origin;
@@ -331,6 +378,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
     const res = await fetch(url, {
       ...options,
       cache: 'no-store',
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
       signal: controller.signal
     });
     if (res.status === 429) {
@@ -339,9 +388,14 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
       const parsed = Number.isFinite(seconds) && seconds > 0
         ? seconds * 1000
         : Math.max(0, Date.parse(retryAfter || '') - Date.now());
-      const delay = Math.min(24 * 60 * 60_000, Math.max(5 * 60_000, parsed || 0));
-      providerCooldowns[origin] = Date.now() + delay;
-      await chrome.storage.local.set({ providerCooldowns }).catch(() => {});
+      await markProviderCooldown(origin, Math.min(24 * 60 * 60_000, Math.max(5 * 60_000, parsed || 0)));
+    }
+    // Error answers are never read by the callers: release the body instead of downloading it.
+    const length = Number(res.headers?.get?.('Content-Length'));
+    if (!res.ok || length > MAX_RESPONSE_BYTES) {
+      res.body?.cancel?.().catch(() => {});
+      if (res.ok) throw new Error('Response too large');
+      return { ok: false, status: res.status, headers: res.headers, text: async () => '', json: async () => { throw new Error('No body'); } };
     }
     // Read the body under the same deadline: a server that sends headers and then stalls must not
     // hold up the probe (and every check queued behind it).
@@ -350,6 +404,7 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
       controller.signal.addEventListener('abort', () => reject(new Error('Timed out')), { once: true });
     });
     const body = await Promise.race([res.text(), aborted]);
+    if (body.length > MAX_RESPONSE_BYTES) throw new Error('Response too large');
     return {
       ok: res.ok,
       status: res.status,
@@ -362,20 +417,33 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
   }
 }
 
+// A public IP is never in these ranges: a captive portal or local proxy answering a request must
+// not be taken for the address websites see. (Documentation ranges stay valid; tests use them.)
+function isNonPublicIPv4(parts) {
+  const [a, b] = parts;
+  return a === 0 || a === 10 || a === 127 || a >= 224 || (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) ||
+    (a === 192 && b === 0 && parts[2] === 0) || (a === 198 && (b === 18 || b === 19));
+}
+
 function isValidIPv4(ip) {
   if (typeof ip !== 'string') return false;
   const parts = ip.trim().split('.');
-  return parts.length === 4 && parts.every(part => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255);
+  return parts.length === 4 && parts.every(part => /^(0|[1-9]\d{0,2})$/.test(part) && Number(part) <= 255) &&
+    !isNonPublicIPv4(parts.map(Number));
 }
 
 function isValidIPv6(ip) {
   if (typeof ip !== 'string' || !ip.includes(':') || ip.length > 39 || !/^[0-9a-f:]+$/i.test(ip)) return false;
+  let canonical;
   try {
-    new URL(`http://[${ip}]/`);
-    return true;
+    canonical = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
   } catch (e) {
     return false;
   }
+  // Unspecified, loopback, IPv4-mapped, link-local, unique-local and multicast addresses.
+  return !(canonical === '::' || canonical === '::1' || canonical.startsWith('::ffff:') ||
+    /^fe[89ab][0-9a-f]:/.test(canonical) || /^f[cd][0-9a-f]{2}:/.test(canonical) || /^ff[0-9a-f]{2}:/.test(canonical));
 }
 
 // IPv4 is discovered from two independent vantage points at once:
@@ -392,6 +460,12 @@ async function firstIPv4(sources) {
   return null;
 }
 
+// On dual-stack networks Chrome reaches cloudflare.com over IPv6, so its trace reports the IPv6
+// address. Then icanhazip (IPv4-only, also on Cloudflare's network) answers instead, and for a
+// while the trace is skipped rather than costing every check an extra round trip.
+const CF_TRACE_V6_SKIP_MS = 10 * 60_000;
+let cfTraceV6Until = 0;
+
 async function probePublicIPv4() {
   const buster = `_t=${Date.now()}`;
   const plain = (url, source) => () => fetchWithTimeout(url, {}, 2000).then(async (res) => {
@@ -403,8 +477,9 @@ async function probePublicIPv4() {
   const cloudflare = () => fetchWithTimeout(`https://cloudflare.com/cdn-cgi/trace?${buster}`, {}, 2000).then(async (res) => {
     if (!res.ok) throw new Error();
     const text = await res.text();
-    const ipMatch = text.match(/ip=([^\n]+)/);
-    const locMatch = text.match(/loc=([^\n]+)/);
+    const ipMatch = text.match(/^ip=([^\r\n]+)/m);
+    const locMatch = text.match(/^loc=([^\r\n]+)/m);
+    if (ipMatch && ipMatch[1].includes(':')) cfTraceV6Until = Date.now() + CF_TRACE_V6_SKIP_MS;
     if (ipMatch && isValidIPv4(ipMatch[1].trim())) {
       return {
         ip: ipMatch[1].trim(),
@@ -421,7 +496,9 @@ async function probePublicIPv4() {
     throw new Error();
   });
   const [edge, independent] = await Promise.all([
-    firstIPv4([cloudflare, plain(`https://ipv4.icanhazip.com?${buster}`, 'icanhazip')]),
+    firstIPv4(Date.now() < cfTraceV6Until
+      ? [plain(`https://ipv4.icanhazip.com?${buster}`, 'icanhazip')]
+      : [cloudflare, plain(`https://ipv4.icanhazip.com?${buster}`, 'icanhazip')]),
     firstIPv4([ipify, plain(`https://checkip.amazonaws.com?${buster}`, 'Amazon')])
   ]);
   return { edge, independent };
@@ -431,6 +508,7 @@ const ROUTE_PAIR_TTL_MS = 2 * 60_000;   // "consecutive" probes must also be clo
 // A mismatch must also last this long: while a VPN connects, old connections keep the previous
 // route for a few seconds, and fast checks would otherwise report that transition as a split.
 let ROUTE_MIN_PERSIST_MS = 15_000;
+const PRIMARY_INDEPENDENT_SOURCE = 'ipify'; // the independent group's first provider
 const FALLBACK_CONFIRMATIONS = 2;        // independent-only answers needed to replace an edge IP
 const GROUP_MISSES_AS_KNOWN = 2;         // a group silent this long no longer vouches for an old IP
 // After the edge group has been silent this long, earlier alternate-route evidence no longer holds
@@ -506,8 +584,11 @@ function evaluateIPv4Route(observation, cachedV4, state, divergence, now = Date.
       }
     }
   }
-  // With no IPv4 answer at all nothing was learned, so keep what is shown and all evidence.
+  // With no IPv4 answer at all nothing was learned, so keep what is shown and all evidence. The
+  // shown IPv4 is held ("Verifying") until both groups have missed GROUP_MISSES_AS_KNOWN probes in
+  // a row: a single timeout on a dual-stack network must not drop the IPv4 card.
   const noAnswer = !edge && !independent;
+  if (noAnswer && cachedIp && !(st.edgeMisses >= GROUP_MISSES_AS_KNOWN && st.indepMisses >= GROUP_MISSES_AS_KNOWN)) held = true;
   const shownIp = primary ? primary.ip : ((held || noAnswer) ? cachedIp : null);
   if (div && shownIp !== div.primaryIp) div = null; // the shown IP moved: old evidence is stale
   if (st.altSeen.primaryIp !== shownIp) st.altSeen = { primaryIp: shownIp, list: [] };
@@ -519,8 +600,15 @@ function evaluateIPv4Route(observation, cachedV4, state, divergence, now = Date.
   if (edge && independent) {
     const own = div ? div.alts.find(alt => alt.source === independent.source) : null;
     if (edge.ip === independent.ip) {
-      if (own) div.alts = div.alts.filter(alt => alt !== own); // this provider now agrees
-      st.altSeen.list = st.altSeen.list.filter(seen => seen.source !== independent.source);
+      if (independent.source === PRIMARY_INDEPENDENT_SOURCE) {
+        // The independent group's main provider agrees: evidence a fallback provider left while it
+        // was unavailable is no longer backed by anything (that fallback is asked only when it fails).
+        if (div) div.alts = [];
+        st.altSeen.list = [];
+      } else {
+        if (own) div.alts = div.alts.filter(alt => alt !== own); // this provider now agrees
+        st.altSeen.list = st.altSeen.list.filter(seen => seen.source !== independent.source);
+      }
     } else {
       if (edge.ip === shownIp && !st.altSeen.list.some(seen => seen.source === independent.source && seen.ip === independent.ip)) {
         st.altSeen.list = [...st.altSeen.list.filter(seen => seen.source !== independent.source), { source: independent.source, ip: independent.ip }].slice(-4);
@@ -586,41 +674,55 @@ function canonicalIPv6(ip) {
   try { return new URL(`http://[${ip.trim()}]/`).hostname.slice(1, -1); } catch (e) { return ip.trim().toLowerCase(); }
 }
 
-async function getFastPublicIPv6() {
+// Cloudflare's edge first (icanhazip), like IPv4, so a Split Route compares the two address
+// families from the same vantage point. Networks that silently drop IPv6 (VPN kill switches)
+// would otherwise cost two full timeouts: ipify starts after IPV6_HEDGE_MS or as soon as
+// icanhazip fails, and the wait never exceeds IPV6_TIMEOUT_MS.
+const IPV6_TIMEOUT_MS = 2200;
+const IPV6_HEDGE_MS = 700;
+function getFastPublicIPv6() {
   const buster = `_t=${Date.now()}`;
-  const endpoints = [
-    () => fetchWithTimeout(`https://api6.ipify.org?format=json&${buster}`, {}, 2200).then(async (res) => {
-      if (!res.ok) throw new Error();
-      const data = await res.json();
-      if (data && isValidIPv6(data.ip)) {
-        return canonicalIPv6(data.ip);
-      }
-      throw new Error();
-    }),
-    () => fetchWithTimeout(`https://ipv6.icanhazip.com?${buster}`, {}, 2200).then(async (res) => {
-      if (!res.ok) throw new Error();
-      const text = await res.text();
-      if (isValidIPv6(text?.trim())) {
-        return canonicalIPv6(text);
-      }
-      throw new Error();
-    })
-  ];
-
-  for (const endpoint of endpoints) {
-    try { return await endpoint(); } catch (e) {}
-  }
-  return null;
+  const icanhazip = () => fetchWithTimeout(`https://ipv6.icanhazip.com?${buster}`, {}, IPV6_TIMEOUT_MS).then(async (res) => {
+    if (!res.ok) throw new Error();
+    const text = await res.text();
+    if (isValidIPv6(text?.trim())) return canonicalIPv6(text);
+    throw new Error();
+  });
+  const ipify = (timeoutMs) => fetchWithTimeout(`https://api6.ipify.org?format=json&${buster}`, {}, timeoutMs).then(async (res) => {
+    if (!res.ok) throw new Error();
+    const data = await res.json();
+    if (data && isValidIPv6(data.ip)) return canonicalIPv6(data.ip);
+    throw new Error();
+  });
+  return new Promise((resolve) => {
+    const started = Date.now();
+    let primaryDone = false, primaryIp = null, backup = null, settled = false;
+    const finish = (ip) => { if (!settled) { settled = true; clearTimeout(hedge); resolve(ip); } };
+    const startBackup = () => {
+      if (backup) return;
+      backup = ipify(Math.max(300, IPV6_TIMEOUT_MS - (Date.now() - started)))
+        .then(ip => { if (!primaryDone || !primaryIp) finish(ip); })
+        .catch(() => { if (primaryDone) finish(primaryIp); });
+    };
+    const hedge = setTimeout(startBackup, IPV6_HEDGE_MS);
+    icanhazip().then(ip => { primaryDone = true; primaryIp = ip; finish(ip); }).catch(() => {
+      primaryDone = true;
+      if (backup) backup.then(() => finish(null)); else { clearTimeout(hedge); startBackup(); backup.then(() => finish(null)); }
+    });
+  });
 }
+
+const regionNames = (() => {
+  try { return new Intl.DisplayNames(['en'], { type: 'region' }); } catch (e) { return null; }
+})();
 
 function getFullCountryName(code, fallbackName) {
   // Short names where the CLDR English label is longer than the ISO 3166-1 short name.
   const shortNames = { PS: 'Palestine' };
   if (code && shortNames[code.toUpperCase()]) return shortNames[code.toUpperCase()];
-  if (code && typeof Intl !== 'undefined' && Intl.DisplayNames) {
+  if (code && regionNames) {
     try {
-      const dn = new Intl.DisplayNames(['en'], { type: 'region' });
-      const name = dn.of(code.toUpperCase());
+      const name = regionNames.of(code.toUpperCase());
       if (name && name !== code.toUpperCase()) return name;
     } catch (e) {}
   }
@@ -646,65 +748,95 @@ function normalizeCoordinate(value, limit) {
   return Number.isFinite(number) && Math.abs(number) <= limit ? number : null;
 }
 
+// Some services answer 0,0 ("Null Island") when they have no location: that is no location.
+function normalizeLatLon(lat, lon) {
+  const la = normalizeCoordinate(lat, 90), lo = normalizeCoordinate(lon, 180);
+  return la === null || lo === null || (la === 0 && lo === 0) ? { lat: null, lon: null } : { lat: la, lon: lo };
+}
+
+// Placeholder words some services use for an unknown city or region.
+function cleanPlace(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return /^(unknown|n\/?a|none|null|-+)$/i.test(text) ? '' : text;
+}
+
+// "AS13335 Cloudflare, Inc." → { asn: 'AS13335', name: 'Cloudflare, Inc.' }
+function splitAsnPrefix(org) {
+  const match = (org || '').match(/^(AS\d+)\s*[-_:|]?\s*(.*)$/i);
+  return match ? { asn: match[1].toUpperCase(), name: match[2] || match[1].toUpperCase() } : { asn: '', name: org || '' };
+}
+
+// Matched as whole words, so "cloud" no longer catches an ISP in St. Cloud and "aws" no word
+// that merely contains it. Relay and mobile networks are checked before datacenters: Cloudflare
+// WARP runs on Cloudflare's network but is a relay, not a hosting provider.
+const RELAY_PATTERN = /\b(cloudflare warp|icloud private relay|private relay|mullvad|proton ?vpn|proton ag|nordvpn|nord security|expressvpn|express vpn|surfshark|windscribe|ivpn|private internet access|cyberghost|hide\.me|tor exit|vpn)\b/i;
+const MOBILE_PATTERN = /\b(mobile|cellular|irancell|mtn irancell|mobile communication company of iran|rightel|t-mobile|verizon wireless|vodafone mobile)\b/i;
+const DATACENTER_PATTERN = new RegExp('\\b(' + [
+  'hetzner', 'ovh', 'ovhcloud', 'digitalocean', 'amazon', 'aws', 'google cloud', 'google llc', 'linode', 'akamai',
+  'vultr', 'm247', 'leaseweb', 'choopa', 'oracle', 'cloudflare', 'fastly', 'serverius', 'contabo',
+  'hostinger', 'tencent', 'alibaba', 'azure', 'microsoft', 'datacenter', 'data center', 'data centre', 'hosting',
+  '(?<!st\\.? )cloud', 'servers?', 'vps', 'dedicated', 'colocation', 'hivelocity', 'cogent', 'psychz', 'quadranet',
+  'scaleway', 'equinix', 'ipvolume', 'datacamp', 'stark industries', 'aeza'
+].join('|') + ')\\b', 'i');
+
 function classifyConnectionType(data) {
-  const isp = (data.isp || '').toLowerCase();
-  const org = (data.org || '').toLowerCase();
-  const domain = (data.domain || '').toLowerCase();
+  const text = [data.isp, data.org, data.domain].filter(Boolean).join(' ');
   const rawType = (data.type || '').toLowerCase();
 
-  if (data.isVpn || data.isProxy || rawType === 'vpn' || rawType === 'proxy') {
-    return 'VPN / Relay';
-  }
-  if (data.isHosting || rawType === 'hosting' || rawType === 'datacenter') {
-    return 'Datacenter';
-  }
-  if (data.isMobile || rawType === 'cellular' || rawType === 'mobile') {
-    return 'Mobile';
-  }
-
-  const datacenterKeywords = [
-    'hetzner', 'ovh', 'digitalocean', 'amazon', 'aws', 'google cloud', 'linode',
-    'vultr', 'm247', 'leaseweb', 'choopa', 'oracle', 'cloudflare', 'fastly',
-    'serverius', 'contabo', 'hostinger', 'tencent', 'alibaba', 'azure', 'akamai',
-    'datacenter', 'data center', 'hosting', 'cloud', 'servers', 'server', 'vps', 'dedicated',
-    'hivelocity', 'cogent', 'psychz', 'quadranet', 'scaleway', 'equinix', 'ipvolume'
-  ];
-
-  for (const kw of datacenterKeywords) {
-    if (isp.includes(kw) || org.includes(kw) || domain.includes(kw)) {
-      return 'Datacenter';
-    }
-  }
-
+  if (data.isVpn || data.isProxy || rawType === 'vpn' || rawType === 'proxy') return 'VPN / Relay';
+  if (data.isHosting || rawType === 'hosting' || rawType === 'datacenter') return 'Datacenter';
+  if (data.isMobile || rawType === 'cellular' || rawType === 'mobile') return 'Mobile';
+  if (RELAY_PATTERN.test(text)) return 'VPN / Relay';
+  if (MOBILE_PATTERN.test(text)) return 'Mobile';
+  if (DATACENTER_PATTERN.test(text)) return 'Datacenter';
   if (['residential', 'isp', 'broadband'].includes(rawType)) return 'Residential';
   return 'Unknown';
 }
 
+// Recent lookups survive the service worker being stopped (session storage is memory only), so
+// switching back and forth between VPN exits does not ask the location services again.
+const GEO_CACHE_KEY = 'geoMemoryCache';
+const geoCacheReady = (chrome.storage.session?.get(GEO_CACHE_KEY) || Promise.resolve({})).then((saved) => {
+  for (const [ip, info] of Object.entries(saved?.[GEO_CACHE_KEY] || {})) if (!geoMemoryCache.has(ip)) geoMemoryCache.set(ip, info);
+}).catch(() => {});
+
+function rememberGeo(ip, info) {
+  geoMemoryCache.delete(ip);
+  geoMemoryCache.set(ip, info);
+  if (geoMemoryCache.size > 16) geoMemoryCache.delete(geoMemoryCache.keys().next().value);
+  chrome.storage.session?.set({ [GEO_CACHE_KEY]: Object.fromEntries(geoMemoryCache) }).catch(() => {});
+}
+
 async function getGeoLocation(ip, initialCountryCode = '', useRecentCache = true) {
+  await geoCacheReady;
   const cached = useRecentCache ? geoMemoryCache.get(ip) : null;
   if (cached && Date.now() - cached.updatedAt < GEO_MEMORY_CACHE_MS) {
     geoMemoryCache.delete(ip);
     geoMemoryCache.set(ip, cached);
     return { ...cached, updatedAt: Date.now() };
   }
-  const result = await withTimeout(fetchGeoLocation(ip, initialCountryCode), GEO_LOOKUP_TIMEOUT_MS,
+  const deadline = Date.now() + GEO_LOOKUP_TIMEOUT_MS;
+  const result = await withTimeout(fetchGeoLocation(ip, initialCountryCode, deadline), GEO_LOOKUP_TIMEOUT_MS,
     () => unresolvedGeoInfo(ip, initialCountryCode));
-  if (result.countryCode || result.isp !== 'N/A') {
-    geoMemoryCache.delete(ip);
-    geoMemoryCache.set(ip, result);
-    if (geoMemoryCache.size > 16) geoMemoryCache.delete(geoMemoryCache.keys().next().value);
-  }
+  // Only complete answers are remembered: a failed or country-only lookup is retried later.
+  if (!geoIncomplete(result)) rememberGeo(ip, result);
   return result;
 }
 
-async function fetchGeoLocation(ip, initialCountryCode = '') {
-  const buster = `_t=${Date.now()}`;
+// After a provider fails, the next one is tried only while the lookup's deadline has not passed,
+// so a lookup that already timed out stops sending requests.
+async function fetchGeoLocation(ip, initialCountryCode = '', deadline = Infinity) {
   if (!isValidIPv4(ip) && !isValidIPv6(ip)) throw new Error('Invalid IP address');
+  const timeLeft = (ms) => Math.min(ms, deadline - Date.now());
 
   try {
-    const res = await fetchWithTimeout(`https://ipwho.is/${ip}?${buster}`, {}, 3800);
+    const res = await fetchWithTimeout(`https://ipwho.is/${ip}`, {}, timeLeft(3000));
     if (res.ok) {
       const data = await res.json();
+      // ipwho.is reports its rate limit as a normal answer with success: false.
+      if (data && data.success === false && /limit|quota|too many/i.test(data.message || '')) {
+        await markProviderCooldown('https://ipwho.is', 15 * 60_000);
+      }
       if (data && data.success) {
         const countryCode = normalizeCountryCode(data.country_code) || normalizeCountryCode(initialCountryCode);
         const countryName = getFullCountryName(countryCode, data.country);
@@ -723,29 +855,30 @@ async function fetchGeoLocation(ip, initialCountryCode = '') {
           ip,
           country: countryName,
           countryCode: countryCode,
-          city: data.city || '',
-          region: data.region || '',
+          city: cleanPlace(data.city),
+          region: cleanPlace(data.region),
           isp: ispStr,
           asn: data.connection && data.connection.asn ? `AS${data.connection.asn}` : 'N/A',
           timezone: (data.timezone && data.timezone.id) || 'N/A',
           connectionType: connType,
-          lat: normalizeCoordinate(data.latitude, 90),
-          lon: normalizeCoordinate(data.longitude, 180),
+          ...normalizeLatLon(data.latitude, data.longitude),
           updatedAt: Date.now()
         };
       }
     }
   } catch (e) {}
 
+  if (timeLeft(3500) <= 0) return unresolvedGeoInfo(ip, initialCountryCode);
   try {
-    const res = await fetchWithTimeout(`https://get.geojs.io/v1/ip/geo/${ip}.json?${buster}`, {}, 3500);
+    const res = await fetchWithTimeout(`https://get.geojs.io/v1/ip/geo/${ip}.json`, {}, timeLeft(3500));
     if (res.ok) {
       const data = await res.json();
       if (data && (data.country_code || data.country)) {
         const countryCode = normalizeCountryCode(data.country_code) || normalizeCountryCode(initialCountryCode);
         const countryName = getFullCountryName(countryCode, data.country);
-        const asnStr = data.asn ? `AS${data.asn}` : 'N/A';
-        const ispStr = data.organization_name || data.organization || 'N/A';
+        const org = splitAsnPrefix(data.organization);
+        const asnStr = data.asn ? `AS${data.asn}` : (org.asn || 'N/A');
+        const ispStr = data.organization_name || org.name || 'N/A';
         const connType = classifyConnectionType({
           isp: ispStr,
           org: data.organization || data.organization_name
@@ -755,41 +888,31 @@ async function fetchGeoLocation(ip, initialCountryCode = '') {
           ip,
           country: countryName,
           countryCode: countryCode,
-          city: data.city || '',
-          region: data.region || '',
+          city: cleanPlace(data.city),
+          region: cleanPlace(data.region),
           isp: ispStr,
           asn: asnStr,
           timezone: data.timezone || 'N/A',
           connectionType: connType,
-          lat: normalizeCoordinate(data.latitude, 90),
-          lon: normalizeCoordinate(data.longitude, 180),
+          ...normalizeLatLon(data.latitude, data.longitude),
           updatedAt: Date.now()
         };
       }
     }
   } catch (e) {}
 
+  if (timeLeft(3500) <= 0) return unresolvedGeoInfo(ip, initialCountryCode);
   try {
-    const res = await fetchWithTimeout(`https://ipinfo.io/${ip}/json?${buster}`, {}, 3500);
+    const res = await fetchWithTimeout(`https://ipinfo.io/${ip}/json`, {}, timeLeft(3500));
     if (res.ok) {
       const data = await res.json();
-      if (data && data.country && !data.error) {
-        const countryCode = normalizeCountryCode(data.country);
+      if (data && (data.country || data.org) && !data.error) {
+        const countryCode = normalizeCountryCode(data.country) || normalizeCountryCode(initialCountryCode);
         const countryName = getFullCountryName(countryCode, '');
-        let lat = null;
-        let lon = null;
-        if (data.loc) {
-          const parts = data.loc.split(',');
-          lat = normalizeCoordinate(parts[0], 90);
-          lon = normalizeCoordinate(parts[1], 180);
-        }
-        let asnStr = 'N/A';
-        let ispStr = data.org || 'N/A';
-        const orgMatch = (data.org || '').match(/^(AS\d+)\s*(.*)$/i);
-        if (orgMatch) {
-          asnStr = orgMatch[1].toUpperCase();
-          ispStr = orgMatch[2] || orgMatch[1];
-        }
+        const [lat, lon] = typeof data.loc === 'string' ? data.loc.split(',') : [];
+        const org = splitAsnPrefix(data.org);
+        const asnStr = org.asn || 'N/A';
+        const ispStr = org.name || 'N/A';
         const connType = classifyConnectionType({
           isp: ispStr,
           org: data.org
@@ -799,14 +922,13 @@ async function fetchGeoLocation(ip, initialCountryCode = '') {
           ip,
           country: countryName,
           countryCode: countryCode,
-          city: data.city || '',
-          region: data.region || '',
+          city: cleanPlace(data.city),
+          region: cleanPlace(data.region),
           isp: ispStr,
           asn: asnStr,
           timezone: data.timezone || 'N/A',
           connectionType: connType,
-          lat: lat,
-          lon: lon,
+          ...normalizeLatLon(lat, lon),
           updatedAt: Date.now()
         };
       }
@@ -856,17 +978,22 @@ function makePendingGeoInfo(ip, countryCode = '') {
 
 // Plain reachability check, independent of CORS headers and provider cooldowns: any HTTP answer,
 // even an error page, proves a working connection.
+// LeakHalo's own server is asked only while Instant change detection is on.
 async function internetReachable() {
-  const ping = (url) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3_000);
-    return fetch(url, { mode: 'no-cors', cache: 'no-store', signal: controller.signal }).finally(() => clearTimeout(timer));
-  };
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 3_000);
+  const ping = (url) => fetch(url, { mode: 'no-cors', cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal });
+  const urls = ['https://cloudflare.com/cdn-cgi/trace', 'https://api.ipify.org/', 'https://checkip.amazonaws.com/'];
   try {
-    await Promise.any([ping('https://cloudflare.com/cdn-cgi/trace'), ping('https://api.ipify.org/'), ping('https://35-232-61-175.sslip.io/healthz')]);
+    const { appSettings } = await chrome.storage.local.get('appSettings');
+    if (fastDetectionEnabled(appSettings)) urls.push('https://35-232-61-175.sslip.io/healthz');
+    await Promise.any(urls.map(ping));
     return true;
   } catch (e) {
     return false;
+  } finally {
+    clearTimeout(timer);
+    controller.abort(); // the first answer decides; the others need not finish
   }
 }
 
@@ -900,13 +1027,23 @@ function resetOfflineRetry() {
   offlineRetry.step = 0;
 }
 
+// Probe bookkeeping that only matters while the browser runs lives in session storage (memory),
+// so frequent checks do not rewrite the disk; it falls back to local storage where unavailable.
+const sessionStore = chrome.storage.session || chrome.storage.local;
+
+// Same fields as routeState apart from the probe timestamp, to skip rewriting an unchanged state.
+const sameRouteState = (a, b) => JSON.stringify({ ...(a || {}), lastPairAt: 0 }) === JSON.stringify({ ...(b || {}), lastPairAt: 0 });
+
 async function fetchAllBackgroundLocations(forceRefresh = false, minimumIntervalMs = PROBE_INTERVAL_MS) {
   if (activeProbePromise) {
     if (!forceRefresh) return activeProbePromise;
     if (!queuedForceProbePromise) {
-      queuedForceProbePromise = activeProbePromise.catch(() => {}).then(() =>
-        fetchAllBackgroundLocations(true, minimumIntervalMs)
-      ).finally(() => { queuedForceProbePromise = null; });
+      // Freed as soon as the queued probe starts, so a request arriving while it runs queues
+      // another probe instead of reusing one that began before the request.
+      queuedForceProbePromise = activeProbePromise.catch(() => {}).then(() => {
+        queuedForceProbePromise = null;
+        return fetchAllBackgroundLocations(true, minimumIntervalMs);
+      });
     }
     return queuedForceProbePromise;
   }
@@ -914,27 +1051,37 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
   // A probe abandoned by the watchdog may still finish later; it must not overwrite newer state.
   const generation = ++probeGeneration;
   const current = () => generation === probeGeneration;
-  const commit = async (values) => { if (current()) await chrome.storage.local.set(values); };
+  const commit = async (values) => { if (current() && Object.keys(values).length) await chrome.storage.local.set(values); };
   const work = (async () => {
     {
       const stored = await chrome.storage.local.get([
         'latestV4Info',
         'latestV6Info',
         'isOffline',
+        'probeError',
+        'v4Unverified',
         'appSettings',
-        'lastProbeAt',
         'routeState',
         'routeDivergence',
-        'pendingV6Notice'
+        'pendingV6Notice',
+        'lastKnownV6Ip'
       ]);
+      const { lastProbeAt } = await sessionStore.get('lastProbeAt').catch(() => ({}));
 
       const cachedV4 = stored.latestV4Info || null;
       const cachedV6 = stored.latestV6Info || null;
-      if (!forceRefresh && Date.now() - (stored.lastProbeAt || 0) < minimumIntervalMs) {
-        return { v4Info: cachedV4, v6Info: cachedV6, isOffline: stored.isOffline === true };
+      const result = (v4Info, v6Info, isOffline = false, probeError = false) => ({ v4Info, v6Info, isOffline, probeError });
+      // Without any stored result there is nothing to fall back on, so the interval never applies.
+      const hasResult = !!(cachedV4 || cachedV6 || stored.isOffline || stored.probeError);
+      // The slower interval does not apply after a failed or offline check (recovery shows at
+      // once) or while a different route is shown: the server only sees its own route.
+      const watchRoutes = !!stored.routeDivergence && stored.appSettings?.warnRouteDivergence === true;
+      const interval = stored.isOffline || stored.probeError || watchRoutes ? Math.min(minimumIntervalMs, POPUP_PROBE_INTERVAL_MS) : minimumIntervalMs;
+      if (!forceRefresh && hasResult && Date.now() - (lastProbeAt || 0) < interval) {
+        return result(cachedV4, cachedV6, stored.isOffline === true, stored.probeError === true);
       }
 
-      await commit({ lastProbeAt: Date.now() });
+      if (current()) await sessionStore.set({ lastProbeAt: Date.now() }).catch(() => {});
 
       // The browser knows it has no network: show that at once, without requests that can only fail.
       // Mostly the 'online' event (or the alarm, if the worker slept) ends this state.
@@ -942,7 +1089,7 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
         await commit({ isOffline: true, probeError: false });
         if (current()) scheduleOfflineRetry(false);
         await withTimeout(current() && updateToolbarDisplay(cachedV4, cachedV6, true, false).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
-        return { v4Info: cachedV4, v6Info: cachedV6, isOffline: true, probeError: false };
+        return result(cachedV4, cachedV6, true, false);
       }
 
       const [observation, fastV6] = await Promise.all([
@@ -953,15 +1100,16 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
       const fastV4 = route.primary;
       const v4Held = route.held;
 
-      if (!fastV4 && !fastV6 && !v4Held) {
+      if (!fastV4 && !fastV6 && (!v4Held || (!observation.edge && !observation.independent))) {
         // Every provider failed. If not even a plain request gets an answer, there is no working
         // connection, although the browser may still report one (virtual network adapters, Wi-Fi
-        // without internet). Otherwise the providers are the problem ("ERR").
+        // without internet). Otherwise the providers are the problem ("ERR"). Either way nothing
+        // was learned about the routes, so the route state is left as it was.
         const isOffline = !deviceOnline() || !(await internetReachable());
-        await commit({ isOffline, probeError: !isOffline, routeState: route.state });
+        await commit({ isOffline, probeError: !isOffline });
         if (isOffline && current()) scheduleOfflineRetry();
         await withTimeout(current() && updateToolbarDisplay(cachedV4, cachedV6, isOffline, !isOffline).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
-        return { v4Info: cachedV4, v6Info: cachedV6, isOffline, probeError: !isOffline };
+        return result(cachedV4, cachedV6, isOffline, !isOffline);
       }
       resetOfflineRetry();
 
@@ -972,34 +1120,30 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
         ? (v4Changed ? { ...makePendingGeoInfo(fastV4.ip, fastV4.countryCode), vantage: fastV4.vantage } : cachedV4)
         : retainedV4;
       const pendingV6 = fastV6 ? (v6Changed ? makePendingGeoInfo(fastV6) : cachedV6) : null;
-      const updateObj = { isOffline: false, probeError: false, v4Unverified: v4Held, lastCheckedAt: Date.now() };
+      const updateObj = { lastCheckedAt: Date.now() };
+      if (stored.isOffline !== false) updateObj.isOffline = false;
+      if (stored.probeError !== false) updateObj.probeError = false;
+      if (stored.v4Unverified !== v4Held) updateObj.v4Unverified = v4Held;
 
       if (v4Changed || v6Changed) {
-        updateObj.latestV4Info = pendingV4;
-        updateObj.latestV6Info = pendingV6;
-        await commit(updateObj);
-        if (route.notify && v4Changed && current() && await sendIPChangeNotification('IPv4', route.notify.from, pendingV4)) {
-          route.state.announcedIp = route.notify.to;
-          await commit({ routeState: route.state });
-        }
-        if (v6Changed && cachedV6?.ip && stored.appSettings?.notifyIPv6 !== false && current()) {
-          // Kept until delivered: a throttled or failed IPv6 alert is retried on the next check.
-          const delivered = await sendIPChangeNotification('IPv6', cachedV6.ip, pendingV6);
-          await commit({ pendingV6Notice: delivered ? null : { from: stored.pendingV6Notice?.from || cachedV6.ip, to: fastV6 } });
-        }
+        // Shown at once ("Locating…"); the change alerts follow once the new location is known.
+        await commit({ ...updateObj, latestV4Info: pendingV4, latestV6Info: pendingV6, routeState: route.state });
         await withTimeout(current() && updateToolbarDisplay(pendingV4, pendingV6, false).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
       }
 
       // Geolocate alternate routes when first confirmed, and retry missing metadata on the same
-      // schedule as the primary IP.
+      // schedule as the primary IP (a manual refresh retries a missing country after 30 s).
       const divergence = route.divergence;
+      if (divergence && route.confirmed.length) divergence.notified = false;
       const altsNeedingGeo = divergence && stored.appSettings?.warnRouteDivergence === true ? divergence.alts.filter(alt => {
         const age = Date.now() - (alt.geoAt || 0);
         return !normalizeCountryCode(alt.geo?.countryCode) &&
-          (age >= GEO_RETRY_INTERVAL_MS || (forceRefresh && age >= MANUAL_GEO_REFRESH_MS));
+          (age >= GEO_RETRY_INTERVAL_MS || (forceRefresh && age >= ALT_GEO_MANUAL_RETRY_MS));
       }) : [];
-      const [finalV4, finalV6, altGeos] = await Promise.all([
-        (async () => {
+      // A refresh of an unchanged IP must not replace a complete location with a failed lookup.
+      const keepComplete = (cached, info) => cached && !cached.pending && !geoIncomplete(cached) && geoIncomplete(info)
+        ? { ...cached, updatedAt: Date.now() } : info;
+      const geoV4 = (async () => {
           if (!fastV4) {
             // A held IP may still be an unfinished placeholder from an interrupted probe.
             if (!retainedV4?.pending) return retainedV4;
@@ -1010,19 +1154,49 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
           const needsEnrichment = v4Changed || !cachedV4?.updatedAt || cachedV4.pending === true ||
             (geoIncomplete(cachedV4) && age >= GEO_RETRY_INTERVAL_MS) ||
             (forceRefresh && age >= MANUAL_GEO_REFRESH_MS);
-          const info = needsEnrichment ? await getGeoLocation(fastV4.ip, fastV4.countryCode, v4Changed) : cachedV4;
+          // The memory cache serves a new or unfinished IP; retries and manual refreshes ask again.
+          const useCache = v4Changed || cachedV4?.pending === true;
+          let info = needsEnrichment ? await getGeoLocation(fastV4.ip, fastV4.countryCode, useCache) : cachedV4;
+          if (needsEnrichment && !v4Changed) info = keepComplete(cachedV4, info);
           return info && info.vantage !== fastV4.vantage ? { ...info, vantage: fastV4.vantage } : info;
-        })(),
-        (async () => {
+        })();
+      const geoV6 = (async () => {
           if (!fastV6) return null;
           const age = Date.now() - (cachedV6?.updatedAt || 0);
           const needsEnrichment = v6Changed || !cachedV6?.updatedAt || cachedV6.pending === true ||
             (geoIncomplete(cachedV6) && age >= GEO_RETRY_INTERVAL_MS) ||
             (forceRefresh && age >= MANUAL_GEO_REFRESH_MS);
-          return needsEnrichment ? getGeoLocation(fastV6, '', v6Changed) : cachedV6;
-        })(),
-        Promise.all(altsNeedingGeo.map(alt => getGeoLocation(alt.ip).catch(() => null)))
+          if (!needsEnrichment) return cachedV6;
+          const info = await getGeoLocation(fastV6, '', v6Changed || cachedV6?.pending === true);
+          return v6Changed ? info : keepComplete(cachedV6, info);
+        })();
+      const geoAlts = Promise.all(altsNeedingGeo.map(alt => getGeoLocation(alt.ip).catch(() => null)));
+
+      // Change alerts carry the new country when geolocation answers within NOTIFY_GEO_WAIT_MS;
+      // a slow lookup must not delay the alert itself.
+      const [alertV4, alertV6] = await Promise.all([
+        withTimeout(geoV4, NOTIFY_GEO_WAIT_MS, () => pendingV4),
+        withTimeout(geoV6, NOTIFY_GEO_WAIT_MS, () => pendingV6)
       ]);
+      if (current()) {
+        // IPv6: compared with the last address seen, even if IPv6 was briefly absent in between.
+        const v6From = cachedV6?.ip || stored.lastKnownV6Ip || null;
+        const v6Notice = v6Changed && v6From && v6From !== fastV6 ? { from: stored.pendingV6Notice?.from || v6From, to: fastV6 } : stored.pendingV6Notice;
+        if (v6Notice) {
+          if (alertV6?.ip !== v6Notice.to || stored.appSettings?.notifyIPv6 === false) {
+            if (stored.pendingV6Notice) await commit({ pendingV6Notice: null }); // superseded, or switched off
+          } else {
+            // Kept until delivered: a throttled or failed IPv6 alert is retried on the next check.
+            const delivered = await sendIPChangeNotification('IPv6', v6Notice.from, alertV6);
+            await commit({ pendingV6Notice: delivered ? null : v6Notice });
+          }
+        }
+        // announcedIp advances only after delivery, so a throttled alert is retried.
+        if (route.notify && await sendIPChangeNotification('IPv4', route.notify.from, alertV4)) {
+          route.state.announcedIp = route.notify.to;
+        }
+      }
+      const [finalV4, finalV6, altGeos] = await Promise.all([geoV4, geoV6, geoAlts]);
 
       altsNeedingGeo.forEach((alt, i) => {
         const geo = altGeos[i];
@@ -1031,35 +1205,34 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
           alt.geo = { country: geo.country, countryCode: geo.countryCode, city: geo.city, isp: geo.isp, asn: geo.asn };
         }
       });
-      if (route.confirmed.length && current()) sendRouteDivergenceNotification(divergence, finalV4);
-      // A change confirmed on a later probe (the IP itself did not change on this one).
-      const v6Notice = stored.pendingV6Notice;
-      if (v6Notice && !v6Changed && current()) {
-        if (finalV6?.ip !== v6Notice.to || stored.appSettings?.notifyIPv6 === false) {
-          await commit({ pendingV6Notice: null }); // superseded by a newer address, or switched off
-        } else if (await sendIPChangeNotification('IPv6', v6Notice.from, finalV6)) {
-          await commit({ pendingV6Notice: null });
-        }
+      // Retried on later checks until delivered, like the IP change alerts.
+      if (divergence && !divergence.notified && current() && await sendRouteDivergenceNotification(divergence, finalV4)) {
+        divergence.notified = true;
       }
-      if (route.notify && !v4Changed && current() && await sendIPChangeNotification('IPv4', route.notify.from, finalV4)) {
-        route.state.announcedIp = route.notify.to;
-        await commit({ routeState: route.state });
+      if (!sameRouteState(route.state, stored.routeState) || v4Changed || v6Changed) updateObj.routeState = route.state;
+      if (JSON.stringify(divergence || null) !== JSON.stringify(stored.routeDivergence || null)) updateObj.routeDivergence = divergence;
+      if (finalV6?.ip && finalV6.ip !== stored.lastKnownV6Ip) updateObj.lastKnownV6Ip = finalV6.ip;
+      // The announced address's country, once known: the "from" of the next country-change alert.
+      if (current()) {
+        const v4Code = normalizeCountryCode(finalV4?.countryCode);
+        if (v4Code && finalV4.ip === route.state.announcedIp) await rememberAnnouncedCountry('IPv4', v4Code);
+        const v6Code = normalizeCountryCode(finalV6?.countryCode);
+        const v6Pending = (await chrome.storage.local.get('pendingV6Notice')).pendingV6Notice;
+        if (v6Code && !v6Pending) await rememberAnnouncedCountry('IPv6', v6Code);
       }
-      updateObj.routeState = route.state;
-      updateObj.routeDivergence = divergence;
 
       if (JSON.stringify(cachedV4) !== JSON.stringify(finalV4)) updateObj.latestV4Info = finalV4;
       if (JSON.stringify(cachedV6) !== JSON.stringify(finalV6)) updateObj.latestV6Info = finalV6;
       await commit(updateObj);
       await withTimeout(current() && updateToolbarDisplay(finalV4, finalV6, false).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
 
-      return { v4Info: finalV4, v6Info: finalV6, isOffline: false };
+      return result(finalV4, finalV6);
     }
   })();
   // Watchdog: a probe that hangs anywhere must not block every later check.
   const probe = withTimeout(work, PROBE_WATCHDOG_MS, async () => {
-    const saved = await chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline']);
-    return { v4Info: saved.latestV4Info || null, v6Info: saved.latestV6Info || null, isOffline: saved.isOffline === true };
+    const saved = await chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeError']);
+    return { v4Info: saved.latestV4Info || null, v6Info: saved.latestV6Info || null, isOffline: saved.isOffline === true, probeError: saved.probeError === true };
   }).finally(() => {
     if (activeProbePromise === probe) activeProbePromise = null;
   });
@@ -1075,33 +1248,30 @@ function applyPrivacyShield() {
   return run;
 }
 
+const WEBRTC_POLICIES = ['disable_non_proxied_udp', 'default_public_interface_only'];
+const requestedWebRtcPolicy = (settings) => WEBRTC_POLICIES.includes(settings?.antiLeakPolicy) ? settings.antiLeakPolicy : WEBRTC_POLICIES[0];
+
+// The two browser settings are applied independently: a failure of one never skips the other.
 async function applyPrivacyShieldNow() {
   let effective = false;
+  const settings = (await chrome.storage.local.get('appSettings').catch(() => ({}))).appSettings || {};
+  const network = chrome.privacy?.network;
   try {
-    const res = await chrome.storage.local.get('appSettings');
-    const settings = res.appSettings || {};
-    const shieldActive = settings.enableAntiLeakShield !== false;
-    const policyMode = settings.antiLeakPolicy || 'disable_non_proxied_udp';
-    const blockDnsPrefetch = settings.enableDnsPrefetchBlock !== false;
-
-    if (chrome.privacy && chrome.privacy.network) {
-      if (chrome.privacy.network.webRTCIPHandlingPolicy) {
-        if (shieldActive) {
-          await chrome.privacy.network.webRTCIPHandlingPolicy.set({ value: policyMode });
-          const current = await chrome.privacy.network.webRTCIPHandlingPolicy.get({});
-          effective = current.value === policyMode && current.levelOfControl === 'controlled_by_this_extension';
-        } else {
-          await chrome.privacy.network.webRTCIPHandlingPolicy.clear({});
-        }
+    if (network?.webRTCIPHandlingPolicy) {
+      if (settings.enableAntiLeakShield !== false) {
+        const policyMode = requestedWebRtcPolicy(settings);
+        await network.webRTCIPHandlingPolicy.set({ value: policyMode });
+        const current = await network.webRTCIPHandlingPolicy.get({});
+        effective = current.value === policyMode && current.levelOfControl === 'controlled_by_this_extension';
+      } else {
+        await network.webRTCIPHandlingPolicy.clear({});
       }
-
-      if (chrome.privacy.network.networkPredictionEnabled) {
-        if (blockDnsPrefetch) {
-          await chrome.privacy.network.networkPredictionEnabled.set({ value: false });
-        } else {
-          await chrome.privacy.network.networkPredictionEnabled.clear({});
-        }
-      }
+    }
+  } catch (err) {}
+  try {
+    if (network?.networkPredictionEnabled) {
+      if (settings.enableDnsPrefetchBlock !== false) await network.networkPredictionEnabled.set({ value: false });
+      else await network.networkPredictionEnabled.clear({});
     }
   } catch (err) {}
   await chrome.storage.local.set({ shieldEffective: effective });
@@ -1156,8 +1326,27 @@ async function syncFastChannel() {
   if (typeof WebSocket === 'undefined') return;
   const { appSettings } = await chrome.storage.local.get('appSettings');
   fastChannel.enabled = fastDetectionEnabled(appSettings);
-  if (!fastChannel.enabled) { stopFastChannel(); return; }
-  if (!fastChannel.ws && !fastChannel.retryTimer && !fastChannel.connecting) connectFastChannel();
+  if (!fastChannel.enabled) {
+    stopFastChannel();
+    fastChannel.attempt = 0;
+    saveFastBackoff(0); // switched on again later, it connects at once
+    // Switched off: the server's last view of this connection is no longer needed.
+    await chrome.storage.local.remove?.('fastChannelIp');
+    return;
+  }
+  if (!fastChannel.ws && !fastChannel.retryTimer && !fastChannel.connecting) await connectFastChannel();
+}
+
+// The backoff survives the worker being stopped between alarms (session storage is memory only),
+// so an unreachable server is not asked again every time the worker wakes.
+const FAST_BACKOFF_KEY = 'fastChannelBackoff';
+async function fastBackoffWait() {
+  const saved = (await chrome.storage.session?.get(FAST_BACKOFF_KEY).catch(() => null))?.[FAST_BACKOFF_KEY];
+  if (saved && fastChannel.attempt === 0 && !fastChannel.ws) fastChannel.attempt = saved.attempt || 0;
+  return Math.max(0, (saved?.retryAt || 0) - Date.now());
+}
+function saveFastBackoff(retryAt) {
+  chrome.storage.session?.set({ [FAST_BACKOFF_KEY]: { attempt: fastChannel.attempt, retryAt } }).catch(() => {});
 }
 
 function stopFastChannel() {
@@ -1170,16 +1359,33 @@ function stopFastChannel() {
   if (ws) { try { ws.close(1000, 'disabled'); } catch (e) {} }
 }
 
+// Test-only override URLs: encrypted, or plain only to this machine.
+const isAllowedDevChannelUrl = (url) => {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'wss:' || (u.protocol === 'ws:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname));
+  } catch (e) {
+    return false;
+  }
+};
+
 async function connectFastChannel() {
-  if (!fastChannel.enabled || fastChannel.ws || fastChannel.connecting) return;
+  if (!fastChannel.enabled || fastChannel.ws || fastChannel.connecting || fastChannel.retryTimer) return;
   // Offline: wait for the 'online' event (or the next alarm) instead of dialing.
   if (!deviceOnline()) return;
+  const wait = await fastBackoffWait();
+  if (wait > 0) {
+    if (!fastChannel.retryTimer && !fastChannel.ws) fastChannel.retryTimer = setTimeout(() => { fastChannel.retryTimer = null; connectFastChannel(); }, wait);
+    return;
+  }
+  if (!fastChannel.enabled || fastChannel.ws || fastChannel.connecting || fastChannel.retryTimer) return;
   fastChannel.connecting = true;
   let url, reachable;
   try {
     // Test-only override so the end-to-end suite can point the channel at a local stand-in.
     const { devFastChannelUrls } = await chrome.storage.local.get('devFastChannelUrls');
-    const urls = Array.isArray(devFastChannelUrls) && devFastChannelUrls.length ? devFastChannelUrls : FAST_CHANNEL_URLS;
+    const devUrls = Array.isArray(devFastChannelUrls) ? devFastChannelUrls.filter(isAllowedDevChannelUrl) : [];
+    const urls = devUrls.length ? devUrls : FAST_CHANNEL_URLS;
     url = urls[fastChannel.urlIndex % urls.length];
     reachable = await fastServerReachable(url);
   } finally {
@@ -1203,6 +1409,7 @@ async function connectFastChannel() {
     opened = true;
     openedAt = Date.now();
     fastChannel.attempt = 0;
+    saveFastBackoff(0);
     // The server is reachable again: if the last check found no connection, re-check now.
     chrome.storage.local.get(['isOffline', 'probeError']).then((res) => {
       if (res.isOffline === true || res.probeError === true) fetchAllBackgroundLocations(true).catch(() => {});
@@ -1212,7 +1419,12 @@ async function connectFastChannel() {
     // Pings keep the socket (and with it this service worker) alive and detect silent drops.
     const ping = () => {
       if (fastChannel.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({ type: 'ping', id: ++id }));
+      try {
+        ws.send(JSON.stringify({ type: 'ping', id: ++id }));
+      } catch (e) {
+        try { ws.close(4001, 'send failed'); } catch (_) {}
+        return;
+      }
       clearTimeout(fastChannel.pongTimer);
       fastChannel.pongTimer = setTimeout(() => { try { ws.close(4000, 'pong timeout'); } catch (e) {} }, FAST_PONG_TIMEOUT_MS);
       fastChannel.pingTimer = setTimeout(ping, FAST_PING_MS);
@@ -1254,78 +1466,117 @@ async function connectFastChannel() {
 function scheduleFastReconnect() {
   if (!fastChannel.enabled || fastChannel.retryTimer) return;
   const delay = FAST_BACKOFF_MS[Math.min(fastChannel.attempt++, FAST_BACKOFF_MS.length - 1)];
+  saveFastBackoff(Date.now() + delay);
   fastChannel.retryTimer = setTimeout(() => { fastChannel.retryTimer = null; connectFastChannel(); }, delay);
 }
 
-async function onFastChannelIp(ip, isCurrent = () => true) {
-  const { fastChannelIp } = await chrome.storage.local.get('fastChannelIp');
+// The server's view of the IP is only a trigger, never displayed: when it differs from the address
+// LeakHalo shows for that family, the network may have changed, so the regular providers verify
+// now instead of waiting for the alarm. Nothing known yet: the regular first check covers it.
+async function onFastChannelIp(rawIp, isCurrent = () => true) {
+  const ip = rawIp.includes(':') ? canonicalIPv6(rawIp) : rawIp.trim();
+  const { fastChannelIp, latestV4Info, latestV6Info } = await chrome.storage.local.get(['fastChannelIp', 'latestV4Info', 'latestV6Info']);
   if (ip === fastChannelIp || !isCurrent()) return;
   await chrome.storage.local.set({ fastChannelIp: ip });
-  // First value is a baseline. Afterwards a different IP means the network changed: verify now
-  // with the regular providers instead of waiting for the alarm. Only a trigger, never displayed.
-  if (fastChannelIp) fetchAllBackgroundLocations(true).catch(() => {});
+  const known = ip.includes(':') ? latestV6Info?.ip : latestV4Info?.ip;
+  if (known ? ip !== known : !!fastChannelIp) fetchAllBackgroundLocations(true).catch(() => {});
 }
 
+// The 30-second alarm exists only while automatic checks are on, so with them off the worker is
+// not woken twice a minute for nothing.
+const PROBE_ALARM = 'fetchLocationsAlarm';
+let alarmCheck = null;
 function ensureAlarm() {
-  chrome.alarms.get('fetchLocationsAlarm', (alarm) => {
-    if (alarm?.periodInMinutes !== 0.5) {
-      chrome.alarms.create('fetchLocationsAlarm', { periodInMinutes: 0.5 });
+  alarmCheck = alarmCheck || (async () => {
+    try {
+      if (!(await autoChecksEnabled())) {
+        await chrome.alarms.clear(PROBE_ALARM);
+        return;
+      }
+      const alarm = await chrome.alarms.get(PROBE_ALARM);
+      if (alarm?.periodInMinutes !== 0.5) await chrome.alarms.create(PROBE_ALARM, { periodInMinutes: 0.5 });
+    } catch (e) {} finally {
+      alarmCheck = null;
     }
-  });
+  })();
+  return alarmCheck;
 }
 ensureAlarm();
 
 async function autoRefresh() {
-  syncFastChannel().catch(() => {}); // revive the channel if the worker was restarted
+  // Revive the channel if the worker was restarted; the worker stays busy until both finish.
   const { appSettings } = await chrome.storage.local.get('appSettings');
   // Slightly below the alarm period, so a probe that ran just before does not skip a whole tick.
-  if (appSettings?.enableAutoRefresh !== false) return fetchAllBackgroundLocations(false, PROBE_INTERVAL_MS - 5_000);
+  await Promise.all([
+    syncFastChannel().catch(() => {}),
+    appSettings?.enableAutoRefresh !== false ? fetchAllBackgroundLocations(false, PROBE_INTERVAL_MS - 5_000).catch(() => {}) : null
+  ]);
 }
 
+// Every worker start already runs the setup at the bottom of this file (alarm, policies, toolbar,
+// channel); these events add only what is specific to them.
 chrome.runtime.onInstalled.addListener((details) => {
-  ensureAlarm();
-  syncFastChannel().catch(() => {});
-  applyPrivacyShield();
-  chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeError'], (res) => {
-    updateToolbarDisplay(res.latestV4Info || null, res.latestV6Info || null, res.isOffline || false, res.probeError === true);
-  });
-  fetchAllBackgroundLocations(true);
+  fetchAllBackgroundLocations(true).catch(() => {});
   if (details?.reason === 'install') {
     chrome.tabs.create({ url: chrome.runtime.getURL('welcome/welcome.html') }).catch(() => {});
   }
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  ensureAlarm();
-  syncFastChannel().catch(() => {});
-  applyPrivacyShield();
-  chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeError'], (res) => {
-    updateToolbarDisplay(res.latestV4Info || null, res.latestV6Info || null, res.isOffline || false, res.probeError === true);
-  });
   autoChecksEnabled().then(on => on && fetchAllBackgroundLocations(true)).catch(() => {});
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'fetchLocationsAlarm') {
-    autoRefresh();
-  }
+  if (alarm.name === PROBE_ALARM) autoRefresh().catch(() => {});
 });
+
+// The settings pages may change, with their allowed values. Anything else in a patch is ignored.
+const BOOLEAN_SETTINGS = ['enableNotifications', 'notifyIPv6', 'enableAutoRefresh', 'enableFastDetection', 'warnRouteDivergence',
+  'showMap', 'enableAntiLeakShield', 'enableDnsPrefetchBlock', 'enableWebRtcScan', 'showTimeZone', 'maskIp'];
+const CHOICE_SETTINGS = { antiLeakPolicy: WEBRTC_POLICIES, badgeMode: ['flag', 'text', 'off'], optionsTheme: ['light', 'dark', 'system'] };
+function validSettingsPatch(patch) {
+  const clean = {};
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return clean;
+  for (const [key, value] of Object.entries(patch)) {
+    if (BOOLEAN_SETTINGS.includes(key) ? typeof value === 'boolean' : CHOICE_SETTINGS[key]?.includes(value)) clean[key] = value;
+  }
+  return clean;
+}
+const PRIVACY_KEYS = ['enableAntiLeakShield', 'antiLeakPolicy', 'enableDnsPrefetchBlock'];
+const TOOLBAR_KEYS = ['badgeMode', 'warnRouteDivergence'];
 
 // Every page changes settings through this queue, field by field, so two pages saving at the same
 // time can never overwrite each other's choice with a stale copy.
 let settingsChain = Promise.resolve();
-// patch: fields to set, or a function of the current settings returning those fields.
+// patch: fields to set, or a function of the current settings returning those fields. Only the
+// effects of fields that actually changed run (browser policies, toolbar, checks).
 function updateSettings(patch) {
   const run = settingsChain.catch(() => {}).then(async () => {
-    const { appSettings } = await chrome.storage.local.get('appSettings');
-    const fields = typeof patch === 'function' ? patch(appSettings || {}) : patch;
-    const next = { ...(appSettings || {}), ...fields };
-    await chrome.storage.local.set({ appSettings: next });
-    const shieldEffective = await applyPrivacyShield();
-    if (next.enableAutoRefresh === false) resetOfflineRetry();
-    chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeError'], (res) => {
-      updateToolbarDisplay(res.latestV4Info || null, res.latestV6Info || null, res.isOffline || false, res.probeError === true);
-    });
+    const { appSettings, shieldEffective: storedEffective } = await chrome.storage.local.get(['appSettings', 'shieldEffective']);
+    const previous = appSettings || {};
+    const fields = validSettingsPatch(typeof patch === 'function' ? patch(previous) : patch);
+    const next = { ...previous, ...fields };
+    const changed = (key) => key in fields && fields[key] !== previous[key];
+    if (Object.keys(fields).some(changed)) await chrome.storage.local.set({ appSettings: next });
+    // Re-applied when a privacy field changed, and as a retry while the policy is not confirmed.
+    const shieldEffective = PRIVACY_KEYS.some(changed) || storedEffective !== true
+      ? await applyPrivacyShield() : true;
+    const autoWasOff = previous.enableAutoRefresh === false;
+    if (next.enableAutoRefresh === false) {
+      resetOfflineRetry();
+      await chrome.alarms.clear(PROBE_ALARM).catch(() => {});
+    } else if (autoWasOff) {
+      ensureAlarm();
+    }
+    if (TOOLBAR_KEYS.some(changed)) {
+      const res = await chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeError']);
+      await updateToolbarDisplay(res.latestV4Info || null, res.latestV6Info || null, res.isOffline || false, res.probeError === true);
+    }
+    // Checks switched back on, or the route warning turned on (its other routes still need a
+    // location): check now instead of waiting for the next alarm.
+    if ((autoWasOff && next.enableAutoRefresh !== false) || (changed('warnRouteDivergence') && next.warnRouteDivergence === true)) {
+      fetchAllBackgroundLocations(true).catch(() => {});
+    }
     return { settings: next, shieldEffective };
   });
   settingsChain = run;
@@ -1333,7 +1584,9 @@ function updateSettings(patch) {
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.type === 'UPDATE_SETTINGS' && request.patch && typeof request.patch === 'object') {
+  // Only this extension's own pages talk to the worker.
+  if (!request || typeof request !== 'object' || sender?.id !== chrome.runtime.id) return false;
+  if (request.type === 'UPDATE_SETTINGS' && request.patch && typeof request.patch === 'object' && !Array.isArray(request.patch)) {
     updateSettings(request.patch)
       .then(({ settings, shieldEffective }) => sendResponse({ status: 'ok', settings, shieldEffective }))
       .catch(() => sendResponse({ status: 'error' }));
@@ -1344,16 +1597,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   if (request.type === 'CHECK_NETWORK') {
-    fetchAllBackgroundLocations(request.force === true, POPUP_PROBE_INTERVAL_MS).then((data) => sendResponse({ status: 'ok', data })).catch(() => sendResponse({ status: 'error' }));
-    return true;
-  }
-  if (request.type === 'SETTINGS_UPDATED') {
-    applyPrivacyShield().then(() => {
-      chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeError'], (res) => {
-        updateToolbarDisplay(res.latestV4Info || null, res.latestV6Info || null, res.isOffline || false, res.probeError === true);
-      });
-      sendResponse({ status: 'ok' });
-    });
+    // While LeakHalo's server connection is up it reports a changed IP within seconds (and a
+    // dropped connection triggers a check), so the open popup asks the providers less often.
+    const interval = fastChannel.ws?.readyState === 1 ? POPUP_PROBE_WITH_CHANNEL_MS : POPUP_PROBE_INTERVAL_MS;
+    fetchAllBackgroundLocations(request.force === true, interval).then((data) => sendResponse({ status: 'ok', data })).catch(() => sendResponse({ status: 'error' }));
     return true;
   }
   if (request.type === 'TOGGLE_SHIELD') {
@@ -1379,6 +1626,7 @@ chrome.storage.onChanged?.addListener((changes, area) => {
 if (typeof self !== 'undefined' && typeof self.addEventListener === 'function') {
   self.addEventListener('online', () => {
     fastChannel.attempt = 0;
+    saveFastBackoff(0);
     clearTimeout(fastChannel.retryTimer);
     fastChannel.retryTimer = null;
     syncFastChannel().catch(() => {});
@@ -1393,13 +1641,16 @@ if (typeof self !== 'undefined' && typeof self.addEventListener === 'function') 
 
 const webRtcPolicy = chrome.privacy?.network?.webRTCIPHandlingPolicy;
 if (webRtcPolicy?.onChange) {
-  webRtcPolicy.onChange.addListener(async (details) => {
+  // Queued behind any policy change in progress, so a late event cannot overwrite a newer result.
+  webRtcPolicy.onChange.addListener((details) => {
     if (details.incognitoSpecific) return;
-    const { appSettings } = await chrome.storage.local.get('appSettings');
-    const requested = appSettings?.antiLeakPolicy || 'disable_non_proxied_udp';
-    const enabled = appSettings?.enableAntiLeakShield !== false;
-    const shieldEffective = enabled && details.value === requested &&
-      details.levelOfControl === 'controlled_by_this_extension';
-    await chrome.storage.local.set({ shieldEffective });
+    privacyChain = privacyChain.catch(() => false).then(async () => {
+      const { appSettings } = await chrome.storage.local.get('appSettings');
+      const shieldEffective = appSettings?.enableAntiLeakShield !== false &&
+        details.value === requestedWebRtcPolicy(appSettings) && details.levelOfControl === 'controlled_by_this_extension';
+      await chrome.storage.local.set({ shieldEffective });
+      return shieldEffective;
+    });
+    return privacyChain;
   });
 }

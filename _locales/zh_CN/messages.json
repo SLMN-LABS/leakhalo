@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "LeakHalo – IP 与 WebRTC 泄露防护",
+    "description": "Extension name in the Chrome Web Store and browser."
+  },
+  "extDescription": {
+    "message": "查看你的公网 IP，检测 WebRTC 泄露，一眼确认你的在线隐私状况。",
+    "description": "Short description in the Chrome Web Store."
+  }
+}
