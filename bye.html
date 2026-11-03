@@ -27,25 +27,25 @@
 <main>
   <img src="assets/icons/icon128.png" alt="">
   <section id="ask">
-    <h1 data-t="title">Sorry to see you go</h1>
-    <p data-t="sub">One tap tells us why. Nothing else is collected.</p>
+    <h1>Sorry to see you go</h1>
+    <p>One tap tells us why. Nothing else is collected.</p>
     <div class="reasons">
-      <button class="reason" data-r="slow" data-t="slow">Too slow to notice IP or country changes</button>
-      <button class="reason" data-r="wrong" data-t="wrong">Showed ERR or the wrong country</button>
-      <button class="reason" data-r="notneeded" data-t="notneeded">I didn't need it</button>
-      <button class="reason" data-r="other_ext" data-t="other_ext">I use another extension</button>
-      <button class="reason" data-r="other" data-t="other">Something else</button>
+      <button class="reason" data-r="slow">Too slow to notice IP or country changes</button>
+      <button class="reason" data-r="wrong">Showed ERR or the wrong country</button>
+      <button class="reason" data-r="notneeded">I didn't need it</button>
+      <button class="reason" data-r="other_ext">I use another extension</button>
+      <button class="reason" data-r="other">Something else</button>
     </div>
   </section>
   <section id="more" hidden>
-    <h1 data-t="thanks">Thank you!</h1>
-    <p id="moreLabel" data-t="more">Anything to add? (optional)</p>
+    <h1>Thank you!</h1>
+    <p id="moreLabel">Anything to add? (optional)</p>
     <textarea id="comment" maxlength="500" aria-labelledby="moreLabel"></textarea>
-    <button class="send" id="send" data-t="send">Send</button>
+    <button class="send" id="send">Send</button>
   </section>
   <section id="done" hidden>
-    <h1 data-t="thanks">Thank you!</h1>
-    <p data-t="bye">Your answer helps make LeakHalo better.</p>
+    <h1>Thank you!</h1>
+    <p>Your answer helps make LeakHalo better.</p>
   </section>
 </main>
 <script>
@@ -54,22 +54,9 @@
     action: 'https://docs.google.com/forms/d/e/1FAIpQLSdlG8OnZ4orABgLVepH1-l-NzgpD5fUPvGqxe0y4rWyuVLv8g/formResponse',
     reason: 'entry.86494502', comment: 'entry.1163705695', version: 'entry.735757276', lang: 'entry.205773903'
   };
-  const FA = {
-    title: 'متأسفیم که می‌روی', sub: 'با یک لمس بگو چرا. هیچ چیز دیگری جمع نمی‌شود.',
-    slow: 'تغییر IP یا کشور را دیر تشخیص می‌داد', wrong: 'ERR یا کشور اشتباه نشان می‌داد',
-    notneeded: 'لازمش نداشتم', other_ext: 'از اکستنشن دیگری استفاده می‌کنم', other: 'دلیل دیگر',
-    thanks: 'ممنون!', more: 'چیزی می‌خواهی اضافه کنی؟ (اختیاری)', send: 'ارسال',
-    bye: 'جوابت به بهتر شدن LeakHalo کمک می‌کند.'
-  };
   const params = new URLSearchParams(location.search);
   const version = (params.get('v') || '').slice(0, 20);
   const lang = (params.get('l') || navigator.language || '').slice(0, 10);
-  if (/^fa\b/i.test(lang)) {
-    document.documentElement.lang = 'fa';
-    document.documentElement.dir = 'rtl';
-    document.querySelectorAll('[data-t]').forEach((el) => { if (FA[el.dataset.t]) el.textContent = FA[el.dataset.t]; });
-    document.title = 'LeakHalo حذف شد';
-  }
   const submit = (fields) => {
     if (!FORM.action) return;
     const body = new URLSearchParams();
