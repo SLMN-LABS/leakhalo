@@ -18,7 +18,7 @@ jobs:
       - name: Package the extension
         run: |
           mkdir -p dist
-          zip -qr "dist/LeakHalo-$(node -p "require('./manifest.json').version").zip" manifest.json background popup options welcome assets privacy.html privacy.css
+          zip -qr "dist/LeakHalo-$(node -p "require('./manifest.json').version").zip" manifest.json _locales background popup options welcome assets privacy.html privacy.css
       - uses: actions/upload-artifact@v4
         with:
           name: LeakHalo-extension

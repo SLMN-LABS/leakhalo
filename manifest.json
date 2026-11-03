@@ -2,14 +2,15 @@
   "manifest_version": 3,
   "name": "__MSG_extName__",
   "short_name": "LeakHalo",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "description": "__MSG_extDescription__",
   "default_locale": "en",
   "permissions": [
     "storage",
     "alarms",
     "notifications",
-    "privacy"
+    "privacy",
+    "idle"
   ],
   "background": {
     "service_worker": "background/background.js"
@@ -35,7 +36,7 @@
     "128": "assets/icons/icon128.png"
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; connect-src 'self' https://cloudflare.com https://ipv4.icanhazip.com https://ipv6.icanhazip.com https://api.ipify.org https://api6.ipify.org https://checkip.amazonaws.com https://ipwho.is https://get.geojs.io https://ipinfo.io https://35-232-61-175.sslip.io wss://35-232-61-175.sslip.io ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*"
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; connect-src 'self' https://cloudflare.com https://www.cloudflare.com https://ipv4.icanhazip.com https://ipv6.icanhazip.com https://api.ipify.org https://api6.ipify.org https://checkip.amazonaws.com https://ipwho.is https://get.geojs.io https://ipinfo.io ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:*"
   },
   "minimum_chrome_version": "120"
 }

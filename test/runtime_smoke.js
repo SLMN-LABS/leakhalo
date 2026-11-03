@@ -35,6 +35,9 @@ const notifications = [];
 let cloudflareLoc = 'US';
 let cloudflareV6 = false; // dual-stack: cloudflare.com answers over IPv6
 let notifyFails = false; // Chrome reports chrome.runtime.lastError for notifications.create
+let idleState = 'active';
+let idleDetectionInterval = 120;
+let idleStateChangeListener = null;
 
 function result(body, ok = true, status = ok ? 200 : 500, headers = {}) {
   const text = typeof body === 'string' ? body : JSON.stringify(body);
@@ -49,6 +52,11 @@ const chrome = {
   runtime: {
     getURL: name => `chrome-extension://test/${name}`,
     onInstalled: { addListener(listener) { installedListener = listener; } }, onStartup: event, onMessage: event
+  },
+  idle: {
+    queryState: async (seconds) => idleState,
+    setDetectionInterval: (seconds) => { idleDetectionInterval = seconds; },
+    onStateChanged: { addListener(listener) { idleStateChangeListener = listener; } }
   },
   tabs: { async create(options) { createdTabs.push(options); } },
   alarms: { get: async (_name) => (alarmPeriod ? { periodInMinutes: alarmPeriod } : undefined), async create(_name, info) { alarmPeriod = info.periodInMinutes; }, async clear() { alarmPeriod = 0; return true; }, onAlarm: event },
@@ -91,7 +99,7 @@ const context = vm.createContext({
   async fetch(url) {
     requests.push(url);
     if (networkMode === 'failed') return result('', false);
-    if (url.startsWith('https://cloudflare.com/')) return cloudflareDown ? result('', false) : result(`ip=${cloudflareV6 ? '2001:db8::5' : currentV4}\nloc=${cloudflareLoc}\n`);
+    if (url.startsWith('https://cloudflare.com/') || url.startsWith('https://www.cloudflare.com/')) return cloudflareDown ? result('', false) : result(`ip=${cloudflareV6 ? '2001:db8::5' : currentV4}\nloc=${cloudflareLoc}\n`);
     if (url.startsWith('https://ipv4.icanhazip.com')) return cloudflareDown ? result('', false) : result(`${currentV4}\n`);
     if (new URL(url).hostname === 'api.ipify.org') {
       if (stallIpify) return { ...result(''), text: () => new Promise(() => {}) };
@@ -446,8 +454,11 @@ async function main() {
   assert.equal(toolbar.badge, '!', 'Same-country divergence still shows a warning badge');
   assert.match(toolbar.title, /Sites see different IPs/);
   networkMode = 'failed';
+  const origGraceToolbar = vm.runInContext('ERR_GRACE_MS', context);
+  vm.runInContext('ERR_GRACE_MS = 0', context);
   await vm.runInContext('fetchAllBackgroundLocations(true)', context);
   assert.equal(toolbar.badge, 'ERR', 'Failed verification must not look like a verified location');
+  vm.runInContext(`ERR_GRACE_MS = ${origGraceToolbar}`, context);
   networkMode = 'normal';
   ipifyV4 = null;
   await vm.runInContext('fetchAllBackgroundLocations(true)', context);
@@ -708,21 +719,83 @@ async function main() {
   assert.equal(alarmPeriod, 0.5, 'alarm back when automatic checks are on');
   await vm.runInContext('activeProbePromise', context);
 
-  // The fast channel's IP is compared with the address shown for that family.
+  // Watcher: periodic Cloudflare trace detects network changes without persistent socket.
   {
-    const probes = () => requests.filter(url => url.startsWith('https://cloudflare.com/') || url.startsWith('https://ipv4.icanhazip.com')).length;
-    delete data.fastChannelIp;
-    let before = probes();
-    await vm.runInContext(`onFastChannelIp(${JSON.stringify(data.latestV4Info.ip)})`, context);
+    const probes = () => requests.filter(url => url.startsWith('https://cloudflare.com/') || url.startsWith('https://www.cloudflare.com/') || url.startsWith('https://ipv4.icanhazip.com')).length;
+
+    // 1. Unchanged: no probe and no storage write
+    currentV4 = data.latestV4Info.ip;
+    cloudflareLoc = data.latestV4Info.countryCode;
+    let beforeProbes = probes();
+    let storageWritten = false;
+    const origSet = chrome.storage.local.set;
+    chrome.storage.local.set = async (val) => { storageWritten = true; return origSet(val); };
+    await vm.runInContext('runWatcherTick()', context);
     await vm.runInContext('activeProbePromise', context);
-    assert.equal(probes(), before, 'the server seeing the shown IP triggers nothing');
-    delete data.fastChannelIp;
-    before = probes();
-    await vm.runInContext('onFastChannelIp("203.0.113.200")', context);
+    chrome.storage.local.set = origSet;
+    assert.equal(probes() - beforeProbes, 1, 'tick only made the trace request');
+    assert.equal(storageWritten, false, 'unchanged tick performs no storage writes');
+
+    // 2. Changed IPv4: forced probe
+    currentV4 = '203.0.113.200';
+    beforeProbes = probes();
+    await vm.runInContext('runWatcherTick()', context);
     await vm.runInContext('activeProbePromise', context);
-    assert.ok(probes() > before, 'a first value that differs from the shown IP is checked at once');
-    assert.equal(vm.runInContext('isAllowedDevChannelUrl("ws://example.com/v1/ws")', context), false);
-    assert.equal(vm.runInContext('isAllowedDevChannelUrl("ws://127.0.0.1:9000/v1/ws")', context), true);
+    assert.ok(probes() - beforeProbes > 1, 'changed IPv4 triggers a forced probe');
+    assert.equal(data.latestV4Info.ip, '203.0.113.200');
+
+    // 3. Changed loc: probe
+    cloudflareLoc = 'FR';
+    beforeProbes = probes();
+    await vm.runInContext('runWatcherTick()', context);
+    await vm.runInContext('activeProbePromise', context);
+    assert.ok(probes() - beforeProbes > 1, 'changed loc triggers a forced probe');
+    // The same trace answer again: no probe, even if the shown country still differs (Cloudflare's
+    // country database may disagree with the geolocation provider for good).
+    for (let i = 0; i < 3; i++) {
+      beforeProbes = probes();
+      await vm.runInContext('runWatcherTick()', context);
+      await vm.runInContext('activeProbePromise', context);
+      assert.equal(probes() - beforeProbes, 1, 'an unchanged trace answer never probes again');
+    }
+    cloudflareLoc = 'US'; // restore
+
+    // 4. Success after probeError: probe
+    data.probeError = true;
+    currentV4 = data.latestV4Info.ip;
+    beforeProbes = probes();
+    await vm.runInContext('runWatcherTick()', context);
+    await vm.runInContext('activeProbePromise', context);
+    assert.ok(probes() - beforeProbes > 1, 'trace success after probeError triggers a probe');
+
+    // 5. A failed trace -> one probe for the whole failure streak
+    cloudflareDown = true;
+    beforeProbes = probes();
+    await vm.runInContext('runWatcherTick()', context);
+    await vm.runInContext('activeProbePromise', context);
+    assert.ok(probes() - beforeProbes > 1, 'a failed trace triggers a probe');
+    for (let i = 0; i < 2; i++) {
+      beforeProbes = probes();
+      await vm.runInContext('runWatcherTick()', context);
+      await vm.runInContext('activeProbePromise', context);
+      assert.equal(probes() - beforeProbes, 1, 'later failures do not trigger another probe');
+    }
+    cloudflareDown = false; // restore
+
+    // 6. Idle -> loop stops
+    await vm.runInContext('startWatcher()', context);
+    assert.equal(vm.runInContext('watcherRunning', context), true);
+    idleState = 'idle';
+    await vm.runInContext('runWatcherTick()', context);
+    assert.equal(vm.runInContext('watcherRunning', context), false, 'idle state stops the watcher loop');
+
+    // 7. Active -> restarts
+    idleState = 'active';
+    beforeProbes = probes();
+    await idleStateChangeListener('active');
+    assert.equal(vm.runInContext('watcherRunning', context), true, 'active state restarts the watcher');
+    await vm.runInContext('activeProbePromise', context);
+    assert.ok(probes() > beforeProbes, 'active event triggers a probe');
   }
 
   // A change of country gets its own alert; a new address in the same country is routine.
@@ -755,10 +828,25 @@ async function main() {
   }
 
   networkMode = 'failed';
-  const failed = await vm.runInContext('fetchAllBackgroundLocations(true)', context);
-  assert.equal(failed.probeError, true);
-  assert.equal(failed.isOffline, false, 'Provider failure is not proof of disconnection');
+  const failedGrace = await vm.runInContext('fetchAllBackgroundLocations(true)', context);
+  assert.equal(failedGrace.probeError, false, 'one failure within ERR grace does not report probeError');
+  assert.notEqual(data.probeError, true, 'storage does not commit probeError during grace');
   assert.equal(data.latestV4Info.ip, currentV4, 'A failed probe must retain the last result');
+
+  const origGrace = vm.runInContext('ERR_GRACE_MS', context);
+  vm.runInContext('ERR_GRACE_MS = 0', context);
+  const failedExpired = await vm.runInContext('fetchAllBackgroundLocations(true)', context);
+  assert.equal(failedExpired.probeError, true, 'after ERR_GRACE_MS, probeError is reported');
+  assert.equal(data.probeError, true, 'storage commits probeError after grace expires');
+  assert.equal(failedExpired.isOffline, false, 'Provider failure is not proof of disconnection');
+  assert.equal(data.latestV4Info.ip, currentV4, 'A failed probe must retain the last result');
+  vm.runInContext(`ERR_GRACE_MS = ${origGrace}`, context);
+
+  networkMode = 'normal';
+  const recovered = await vm.runInContext('fetchAllBackgroundLocations(true)', context);
+  assert.equal(recovered.probeError, false, 'success clears probeError');
+  assert.equal(data.probeError, false, 'storage probeError cleared on success');
+  assert.equal(vm.runInContext('errFailureStartedAt', context), 0, 'failure start timestamp reset on success');
 
   context.navigator.onLine = false;
   const offline = await vm.runInContext('fetchAllBackgroundLocations(true)', context);
@@ -785,8 +873,10 @@ async function main() {
     await vm.runInContext('activeProbePromise', context);
     assert.equal(createdTabs.length, 1, `${reason} must not open a welcome tab`);
   }
+  await vm.runInContext('stopWatcher()', context);
   console.log('First-install welcome tab runtime tests passed');
   console.log('Background runtime smoke tests passed');
+  process.exit(0);
 }
 
-main().catch(error => { console.error(error); process.exitCode = 1; });
+main().catch(error => { console.error(error); process.exit(1); });

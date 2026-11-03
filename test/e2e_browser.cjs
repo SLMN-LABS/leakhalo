@@ -12,7 +12,7 @@
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os'), https = require('node:https');
 const { execFileSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '..');
-const req = m => require(m); // npm install (devDependencies) provides playwright-core
+const req = m => { try { return require(m); } catch { return require(path.join(ROOT, 'marketing/halo-film/node_modules', m)); } };
 const { chromium } = req(process.env.PLAYWRIGHT_MODULE || 'playwright-core');
 const BROWSER = process.env.BROWSER_EXECUTABLE || path.join(os.homedir(), '.cache/ms-playwright/chromium-1243/chrome-linux64/chrome');
 const OUT = path.join(__dirname, 'e2e-output');
@@ -34,14 +34,12 @@ const GEO = {
 const TZ = { IR: 'Asia/Tehran', AZ: 'Asia/Baku', DE: 'Europe/Berlin', NL: 'Europe/Amsterdam', US: 'America/Los_Angeles', PS: 'Asia/Hebron', FR: 'Europe/Paris' };
 const net = {
   edge: IR, loc: 'IR', indep: IR, v6: null,
-  serverIp: null,    // IP the LeakHalo server stand-in reports (null = same as edge)
-  sockets: new Set(), wsOrigins: [],
   blackhole: false,  // every connection dropped: no internet although Chrome reports one
   down: new Set(),   // hosts answering 503
   hang: new Set(),   // hosts that never answer
   log: []
 };
-const HOSTS = ['35-232-61-175.sslip.io', 'cloudflare.com', 'ipv4.icanhazip.com', 'ipv6.icanhazip.com', 'api.ipify.org', 'api6.ipify.org', 'checkip.amazonaws.com', 'ipwho.is', 'get.geojs.io', 'ipinfo.io'];
+const HOSTS = ['cloudflare.com', 'www.cloudflare.com', 'ipv4.icanhazip.com', 'ipv6.icanhazip.com', 'api.ipify.org', 'api6.ipify.org', 'checkip.amazonaws.com', 'ipwho.is', 'get.geojs.io', 'ipinfo.io'];
 
 function startServer() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'leakhalo-e2e-'));
@@ -56,7 +54,8 @@ function startServer() {
     // Like real error pages, the 503 carries no CORS header, so the extension cannot read it.
     if (net.down.has(host)) { rs.writeHead(503, { 'content-type': 'text/html' }); return rs.end('down'); }
     switch (host) {
-      case 'cloudflare.com': return send(200, `fl=1\nh=cloudflare.com\nip=${net.edge}\nts=0\nloc=${net.loc}\n`);
+      case 'cloudflare.com':
+      case 'www.cloudflare.com': return send(200, `fl=1\nh=cloudflare.com\nip=${net.edge}\nts=0\nloc=${net.loc}\n`);
       case 'ipv4.icanhazip.com': return send(200, net.edge + '\n');
       case 'api.ipify.org': return send(200, JSON.stringify({ ip: net.indep }), 'application/json');
       case 'checkip.amazonaws.com': return send(200, net.indep + '\n');
@@ -64,8 +63,6 @@ function startServer() {
       // instead trigger Chrome's throttling of extension requests that keep getting server errors.)
       case 'api6.ipify.org': return net.v6 ? send(200, JSON.stringify({ ip: net.v6 }), 'application/json') : rq.socket.destroy();
       case 'ipv6.icanhazip.com': return net.v6 ? send(200, net.v6 + '\n') : rq.socket.destroy();
-      // LeakHalo server health check, used before each WebSocket attempt ('ipwatch' down = blocked).
-      case '35-232-61-175.sslip.io': return net.down.has('ipwatch') ? rq.socket.destroy() : send(200, 'ok');
       case 'ipwho.is': {
         const ip = decodeURIComponent(url.pathname.slice(1)), g = GEO[ip];
         return send(200, JSON.stringify(g ? { success: true, ip, ...g, timezone: { id: TZ[g?.country_code] || 'UTC' }, latitude: 1, longitude: 1 } : { success: false }), 'application/json');
@@ -73,39 +70,8 @@ function startServer() {
       default: return send(503, 'unused');
     }
   });
-  attachWebSocket(server);
   return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server)));
 }
-
-// Minimal RFC 6455 stand-in for LeakHalo's change-detection server: hello + ping/pong.
-function attachWebSocket(server) {
-  const crypto = require('node:crypto');
-  const frame = text => { const b = Buffer.from(text); const head = b.length < 126 ? Buffer.from([0x81, b.length]) : Buffer.from([0x81, 126, b.length >> 8, b.length & 255]); return Buffer.concat([head, b]); };
-  server.on('upgrade', (rq, socket) => {
-    if (!rq.url.startsWith('/v1/ws') || net.down.has('ipwatch') || net.blackhole) { socket.destroy(); return; }
-    const accept = crypto.createHash('sha1').update(rq.headers['sec-websocket-key'] + '258EAFA5-E914-47DA-95CA-C5AB0DC85B11').digest('base64');
-    socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
-    net.sockets.add(socket); net.wsOrigins.push(rq.headers.origin);
-    const ip = () => net.serverIp || net.edge;
-    socket.write(frame(JSON.stringify({ v: 1, type: 'hello', ip: ip(), ts: Date.now() })));
-    let buf = Buffer.alloc(0);
-    socket.on('data', d => {
-      buf = Buffer.concat([buf, d]);
-      while (buf.length >= 6) {
-        const op = buf[0] & 15; let len = buf[1] & 127, off = 2;
-        if (len === 126) { len = buf.readUInt16BE(2); off = 4; }
-        if (buf.length < off + 4 + len) return;
-        const mask = buf.slice(off, off + 4), data = Buffer.from(buf.slice(off + 4, off + 4 + len).map((x, i) => x ^ mask[i % 4]));
-        buf = buf.slice(off + 4 + len);
-        if (op === 8) { socket.end(); return; }
-        if (op === 1) { try { const m = JSON.parse(data); if (m.type === 'ping') socket.write(frame(JSON.stringify({ v: 1, type: 'pong', id: m.id, ip: ip() }))); } catch (e) {} }
-      }
-    });
-    const drop = () => net.sockets.delete(socket);
-    socket.on('close', drop); socket.on('error', drop);
-  });
-}
-const dropSockets = () => { for (const s of net.sockets) s.destroy(); net.sockets.clear(); };
 
 /* ---------------- test runner ---------------- */
 const results = [];
@@ -522,7 +488,8 @@ async function launch({ mocked, port }) {
   await check('All providers down: "Unable to verify network" and ERR badge; recovery restores', async () => {
     HOSTS.forEach(h => net.down.add(h));
     await probe();
-    await waitFor(async () => (await popupState(popup)).status === 'Unable to verify network', 8_000, 'error status');
+    // ERR only after the failures outlast the grace period (8 s; retries at 2, 6 and 14 s).
+    await waitFor(async () => (await popupState(popup)).status === 'Unable to verify network', 25_000, 'error status');
     assert((await welcomeState(welcome)).country === 'Unable to verify network', 'welcome showed a stale country during outage');
     const a = await action();
     assert(a.badge === 'ERR' && /Unable to verify/.test(a.title), JSON.stringify(a));
@@ -604,52 +571,41 @@ async function launch({ mocked, port }) {
     await waitFor(async () => (await pol()).value === 'disable_non_proxied_udp' && (await popupState(popup)).armor === 'ON', 8_000, 'armor on');
   });
 
-  await check('Fast detection: connects to the LeakHalo server from the extension origin', async () => {
-    await waitFor(() => net.sockets.size > 0, 15_000, 'WebSocket connection');
-    assert(net.wsOrigins.every(o => o === `chrome-extension://${id}`), JSON.stringify(net.wsOrigins));
-  });
-  await check('Fast detection: popup closed, alarm off — a network change updates the toolbar in seconds', async () => {
+  await check('Instant detection: popup closed, alarm cleared — a change shows in the toolbar within a few seconds', async () => {
     await popup.close();
     await bg(() => chrome.alarms.clearAll());
     await sleep(1_000);
-    net.edge = C_IP; net.loc = 'FR'; net.indep = C_IP; net.serverIp = null;
+    net.edge = C_IP; net.loc = 'FR'; net.indep = C_IP;
     const t0 = Date.now();
-    dropSockets(); // a real network change breaks the old connection
-    const a = await waitFor(async () => { const x = await action(); return /France/.test(x.title) && x; }, 15_000, 'toolbar to show France');
+    const a = await waitFor(async () => { const x = await action(); return /France/.test(x.title) && x; }, 10_000, 'toolbar to show France');
     console.log(`      toolbar updated ${((Date.now() - t0) / 1000).toFixed(1)} s after the change (alarm disabled)`);
   });
-  await check('Fast detection: a change on a still-open connection is caught by the ping', async () => {
-    await waitFor(() => net.sockets.size > 0, 15_000, 'reconnection');
-    await sleep(1_000);
-    net.edge = DE; net.loc = 'DE'; net.indep = DE; // server keeps the socket; pong reports the new IP
-    const t0 = Date.now();
-    await waitFor(async () => /Germany/.test((await action()).title), 20_000, 'toolbar to show Germany');
-    console.log(`      noticed ${((Date.now() - t0) / 1000).toFixed(1)} s after the change (ping every 10 s)`);
-  });
-  await check('Fast detection: the Settings switch disconnects and reconnects', async () => {
-    await settings({ enableFastDetection: false });
-    await waitFor(() => net.sockets.size === 0, 8_000, 'disconnect');
+  await check('Every IP provider failing for a few seconds (a VPN switching) keeps the flag instead of ERR', async () => {
+    const providers = ['cloudflare.com', 'www.cloudflare.com', 'ipv4.icanhazip.com', 'api.ipify.org', 'checkip.amazonaws.com'];
+    providers.forEach(h => net.down.add(h));
+    await bg(() => fetchAllBackgroundLocations(true));
+    const until = Date.now() + 5_000;
+    while (Date.now() < until) {
+      const a = await action();
+      assert(a.badge !== 'ERR' && !/Unable to verify/.test(a.title) && /France/.test(a.title), `toolbar during the switch: ${JSON.stringify(a)}`);
+      await sleep(500);
+    }
+    providers.forEach(h => net.down.delete(h));
     await sleep(4_000);
-    assert(net.sockets.size === 0, 'reconnected while disabled');
-    await settings({ enableFastDetection: true });
-    await waitFor(() => net.sockets.size > 0, 15_000, 'reconnect');
+    const a = await action();
+    assert(a.badge !== 'ERR' && /France/.test(a.title), JSON.stringify(a));
   });
-  await check('Fast detection: plain ws:// fallback works from the extension', async () => {
-    const plain = require('node:http').createServer((rq, rs) => rs.end('ok'));
-    attachWebSocket(plain);
-    await new Promise(r => plain.listen(0, '127.0.0.1', r));
-    const before = net.wsOrigins.length;
-    await bg(url => chrome.storage.local.set({ devFastChannelUrls: [url] }), `ws://127.0.0.1:${plain.address().port}/v1/ws`);
-    dropSockets();
-    await waitFor(() => net.wsOrigins.length > before, 15_000, 'plain ws connection');
-    await bg(() => chrome.storage.local.remove('devFastChannelUrls'));
-    dropSockets();
-    plain.close();
+  await check('Instant detection: the Settings switch disables and reenables watcher', async () => {
+    await settings({ enableFastDetection: false });
+    await sleep(500);
+    assert(await bg(() => !watcherRunning), 'watcher stopped when disabled');
+    await settings({ enableFastDetection: true });
+    await sleep(500);
+    assert(await bg(() => watcherRunning), 'watcher resumed when enabled');
     await bg(() => { ensureAlarm(); });
   });
   await check('Offline or with the server blocked, the extension records no errors in Chrome', async () => {
-    // Chrome logs each failed WebSocket handshake as an extension error (the red "Errors" button
-    // on chrome://extensions). Read that list the way the Extensions page does.
+    // Read the extension errors list the way the Extensions page does.
     const ext = await context.newPage();
     try {
       await ext.goto('chrome://extensions');
@@ -657,25 +613,23 @@ async function launch({ mocked, port }) {
       await dev('updateProfileConfiguration', { inDeveloperMode: true });
       await dev('updateExtensionConfiguration', { extensionId: id, errorCollection: true });
       const extErrors = async () => ((await ext.evaluate(x => new Promise(r => chrome.developerPrivate.getExtensionInfo(x, r)), id)).runtimeErrors || []).map(e => e.message);
-      const settle = () => waitFor(() => net.sockets.size > 0, 45_000, 'fast channel to reconnect');
-      await settle();
 
-      net.down.add('ipwatch'); // server blocked, as for users in Iran without a VPN
-      dropSockets();
-      await sleep(12_000);
-      assert((await extErrors()).length === 0, `errors with the server blocked: ${JSON.stringify(await extErrors())}`);
-      net.down.delete('ipwatch');
-      await settle();
+      // Filtered the way censors do it: the connection never answers (an HTTP error page without
+      // CORS headers would be logged by Chrome, but filtering does not produce one).
+      net.hang.add('cloudflare.com');
+      net.hang.add('www.cloudflare.com');
+      await sleep(8_000);
+      assert((await extErrors()).length === 0, `errors with Cloudflare blocked: ${JSON.stringify(await extErrors())}`);
+      net.hang.delete('cloudflare.com');
+      net.hang.delete('www.cloudflare.com');
 
       await context.setOffline(true);
-      dropSockets();
       await sleep(4_000);
       await probe();
       await sleep(8_000);
       assert((await storage(['isOffline'])).isOffline === true, 'offline state not stored');
       assert((await extErrors()).length === 0, `errors while offline: ${JSON.stringify(await extErrors())}`);
       await context.setOffline(false);
-      await settle();
       await probe();
       assert((await extErrors()).length === 0, `errors after reconnecting: ${JSON.stringify(await extErrors())}`);
     } finally {
@@ -686,12 +640,10 @@ async function launch({ mocked, port }) {
   await check('Connection lost while Chrome still reports online: "Offline" within seconds, not ERR or the old countries', async () => {
     // Windows keeps reporting a connection with VPN/virtual adapters or Wi-Fi without internet.
     popup = await openPopup();
-    await waitFor(() => net.sockets.size > 0, 45_000, 'fast channel');
     await waitFor(async () => (await popupState(popup)).country && (await popupState(popup)).country !== 'Offline', 10_000, 'online popup');
     try {
       net.blackhole = true;
       const t0 = Date.now();
-      dropSockets();
       const a = await waitFor(async () => { const x = await action(); return /Disconnected/.test(x.title) && x; }, 20_000, 'toolbar to show Disconnected');
       console.log(`      offline shown ${((Date.now() - t0) / 1000).toFixed(1)} s after the connection dropped`);
       assert(a.badge === '', `offline must be the grey icon alone, badge ${JSON.stringify(a.badge)}`);
@@ -710,7 +662,6 @@ async function launch({ mocked, port }) {
       // Going offline also breaks open connections (Playwright's emulation alone keeps them).
       await context.setOffline(true);
       const t0 = Date.now();
-      dropSockets();
       await waitFor(async () => /Disconnected/.test((await action()).title), 5_000, 'toolbar to show Disconnected');
       console.log(`      offline shown ${((Date.now() - t0) / 1000).toFixed(1)} s after Chrome went offline`);
     } finally {
@@ -774,9 +725,9 @@ async function launch({ mocked, port }) {
       assert(noMap.city === 'Tehran' && noMap.mapHref === null, JSON.stringify(noMap));
       await settings({ showMap: true });
       // Providers answer with errors: the shown result is marked as last known.
-      for (const h of ['cloudflare.com', 'ipv4.icanhazip.com', 'api.ipify.org', 'checkip.amazonaws.com', 'api6.ipify.org', 'ipv6.icanhazip.com']) net.down.add(h);
+      for (const h of ['cloudflare.com', 'www.cloudflare.com', 'ipv4.icanhazip.com', 'api.ipify.org', 'checkip.amazonaws.com', 'api6.ipify.org', 'ipv6.icanhazip.com']) net.down.add(h);
       await probe();
-      const stale = await waitFor(async () => { const x = await ui(); return x.tag === 'Last known' && x; }, 10_000, 'last known tag');
+      const stale = await waitFor(async () => { const x = await ui(); return x.tag === 'Last known' && x; }, 25_000, 'last known tag');
       assert(stale.country === 'Iran', JSON.stringify(stale));
       net.down.clear();
       // IPv6-only network: a one-line IPv4 note instead of a failure card.
@@ -816,9 +767,10 @@ async function launch({ mocked, port }) {
     const t0 = Date.now(); await sleep(15_000);
     const recent = net.log.filter(r => r.t >= t0);
     const perMin = h => Math.round(recent.filter(r => r.host === h).length * 60_000 / (Date.now() - t0));
-    const rates = Object.fromEntries(['cloudflare.com', 'api.ipify.org', 'api6.ipify.org', 'ipwho.is'].map(h => [h, perMin(h)]));
-    console.log(`      requests/min: ${JSON.stringify(rates)}`);
-    assert(rates['cloudflare.com'] <= 25 && rates['api.ipify.org'] <= 25 && rates['ipwho.is'] <= 2, JSON.stringify(rates));
+    const rates = Object.fromEntries(['cloudflare.com', 'www.cloudflare.com', 'api.ipify.org', 'api6.ipify.org', 'ipwho.is'].map(h => [h, perMin(h)]));
+    const traceRate = (rates['cloudflare.com'] || 0) + (rates['www.cloudflare.com'] || 0);
+    console.log(`      requests/min: ${JSON.stringify({ ...rates, traceRate })}`);
+    assert(traceRate <= 30 && rates['api.ipify.org'] <= 25 && rates['ipwho.is'] <= 2, JSON.stringify({ ...rates, traceRate }));
   });
 
   await check('No console/page errors or external page requests from welcome; no JavaScript errors elsewhere', async () => {

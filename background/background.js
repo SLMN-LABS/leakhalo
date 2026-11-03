@@ -3,7 +3,22 @@ let activeProbePromise = null;
 let queuedForceProbePromise = null;
 const PROBE_INTERVAL_MS = 30_000;
 const POPUP_PROBE_INTERVAL_MS = 3_000;
-let POPUP_PROBE_WITH_CHANNEL_MS = 10_000;
+let POPUP_PROBE_WITH_WATCHER_MS = 10_000;
+let WATCH_INTERVAL_MS = 3_000;
+let IDLE_SECONDS = 120;
+let ERR_GRACE_MS = 8_000;
+const ERR_RETRY_DELAYS_MS = [2_000, 4_000, 8_000];
+let errFailureStartedAt = 0;
+let errRetryTimer = null;
+let errRetryStep = 0;
+let watcherRunning = false;
+let watcherTimer = null;
+let watcherGeneration = 0; // a loop from before a stop/start never schedules itself again
+let watcherTraceIndex = 0;
+let traceConsecutiveFailures = 0;
+let traceSucceededOnce = false;
+let traceFailureTriggered = false;
+let lastTraceKey = '';
 const GEO_RETRY_INTERVAL_MS = 15 * 60_000;
 const MANUAL_GEO_REFRESH_MS = 5 * 60_000;
 const ALT_GEO_MANUAL_RETRY_MS = 30_000;
@@ -978,15 +993,12 @@ function makePendingGeoInfo(ip, countryCode = '') {
 
 // Plain reachability check, independent of CORS headers and provider cooldowns: any HTTP answer,
 // even an error page, proves a working connection.
-// LeakHalo's own server is asked only while Instant change detection is on.
 async function internetReachable() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 3_000);
   const ping = (url) => fetch(url, { mode: 'no-cors', cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer', signal: controller.signal });
   const urls = ['https://cloudflare.com/cdn-cgi/trace', 'https://api.ipify.org/', 'https://checkip.amazonaws.com/'];
   try {
-    const { appSettings } = await chrome.storage.local.get('appSettings');
-    if (fastDetectionEnabled(appSettings)) urls.push('https://35-232-61-175.sslip.io/healthz');
     await Promise.any(urls.map(ping));
     return true;
   } catch (e) {
@@ -1025,6 +1037,23 @@ function resetOfflineRetry() {
   clearTimeout(offlineRetry.timer);
   offlineRetry.timer = null;
   offlineRetry.step = 0;
+}
+
+function resetErrGrace() {
+  errFailureStartedAt = 0;
+  errRetryStep = 0;
+  clearTimeout(errRetryTimer);
+  errRetryTimer = null;
+}
+
+function scheduleErrRetry(delay) {
+  clearTimeout(errRetryTimer);
+  errRetryTimer = setTimeout(async () => {
+    errRetryTimer = null;
+    if (!(await autoChecksEnabled())) return;
+    fetchAllBackgroundLocations(true).catch(() => {});
+  }, delay);
+  if (typeof errRetryTimer === 'object' && typeof errRetryTimer?.unref === 'function') errRetryTimer.unref();
 }
 
 // Probe bookkeeping that only matters while the browser runs lives in session storage (memory),
@@ -1106,12 +1135,35 @@ async function fetchAllBackgroundLocations(forceRefresh = false, minimumInterval
         // without internet). Otherwise the providers are the problem ("ERR"). Either way nothing
         // was learned about the routes, so the route state is left as it was.
         const isOffline = !deviceOnline() || !(await internetReachable());
-        await commit({ isOffline, probeError: !isOffline });
-        if (isOffline && current()) scheduleOfflineRetry();
-        await withTimeout(current() && updateToolbarDisplay(cachedV4, cachedV6, isOffline, !isOffline).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
-        return result(cachedV4, cachedV6, isOffline, !isOffline);
+        if (isOffline) {
+          resetErrGrace();
+          await commit({ isOffline: true, probeError: false });
+          if (current()) scheduleOfflineRetry();
+          await withTimeout(current() && updateToolbarDisplay(cachedV4, cachedV6, true, false).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
+          return result(cachedV4, cachedV6, true, false);
+        }
+
+        resetOfflineRetry();
+        if (!errFailureStartedAt) {
+          errFailureStartedAt = Date.now();
+          errRetryStep = 0;
+        }
+        const failureDuration = Date.now() - errFailureStartedAt;
+        if (failureDuration >= ERR_GRACE_MS) {
+          await commit({ isOffline: false, probeError: true });
+          if (current()) scheduleErrRetry(10_000);
+          await withTimeout(current() && updateToolbarDisplay(cachedV4, cachedV6, false, true).catch(() => {}), TOOLBAR_WAIT_MS, () => {});
+          return result(cachedV4, cachedV6, false, true);
+        }
+
+        const delay = errRetryStep < ERR_RETRY_DELAYS_MS.length
+          ? ERR_RETRY_DELAYS_MS[errRetryStep++]
+          : 8_000;
+        if (current()) scheduleErrRetry(delay);
+        return result(cachedV4, cachedV6, false, false);
       }
       resetOfflineRetry();
+      resetErrGrace();
 
       const v4Changed = !!fastV4 && cachedV4?.ip !== fastV4.ip;
       const v6Changed = !!fastV6 && cachedV6?.ip !== fastV6;
@@ -1278,208 +1330,161 @@ async function applyPrivacyShieldNow() {
   return effective;
 }
 
-/* ---------- Fast change detection (LeakHalo's own server) ----------
- * An auxiliary WebSocket to LeakHalo's server, which reports the public IP it sees for this
- * connection. While the socket is open Chrome keeps this service worker running (Chrome 116+), so
- * a network change is noticed within seconds even when the popup is closed; the regular providers
- * then verify it immediately. If the server is unreachable, everything works as before on the
- * 30-second alarm. Users can turn it off in Settings (enableFastDetection).
- *
- * Chrome records every failed WebSocket handshake as an error of the extension (shown on
- * chrome://extensions), while failed fetches stay silent. So the channel never dials while the
- * device is offline, and before each attempt it checks with a plain request that the server is
- * reachable. Offline, or where the server is blocked, it waits quietly and retries with backoff.
+/* ---------- Fast change detection (Serverless Watcher) ----------
+ * Periodically queries Cloudflare's trace endpoint every WATCH_INTERVAL_MS (3 s) while the user
+ * is actively using the computer, without keeping an open socket or contacting any developer-operated
+ * server. Calling an extension API (chrome.idle.queryState) each tick keeps the background service
+ * worker alive in Chrome MV3 without needing a persistent socket. When idle or locked, the loop pauses
+ * so the worker can sleep; the 30-second alarm continues. When the user becomes active again, the
+ * watcher resumes.
  */
-// Encrypted only: without it, the 30-second checks carry on.
-const FAST_CHANNEL_URLS = ['wss://35-232-61-175.sslip.io/v1/ws'];
-const FAST_PING_MS = 10_000;
-const FAST_PONG_TIMEOUT_MS = 5_000;
-const FAST_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000];
-const FAST_REACH_TIMEOUT_MS = 5_000;
-const FAST_DROP_PROBE_GAP_MS = 10_000;
-const fastChannel = { ws: null, enabled: false, connecting: false, urlIndex: 0, attempt: 0, pingTimer: null, pongTimer: null, retryTimer: null, dropProbeAt: 0 };
+const WATCHER_TRACE_URLS = [
+  'https://cloudflare.com/cdn-cgi/trace',
+  'https://www.cloudflare.com/cdn-cgi/trace'
+];
 
-// The server's health check on the same host and scheme as the socket (wss → https, ws → http).
-async function fastServerReachable(wsUrl) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FAST_REACH_TIMEOUT_MS);
+async function queryIdleState(seconds) {
+  if (!chrome.idle?.queryState) return 'active';
   try {
-    const url = new URL(wsUrl);
-    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
-    url.pathname = '/healthz';
-    url.search = '';
-    await fetch(url.href, { mode: 'no-cors', cache: 'no-store', signal: controller.signal });
-    return true;
+    const res = chrome.idle.queryState(seconds);
+    if (res && typeof res.then === 'function') return await res;
+    return await new Promise(resolve => chrome.idle.queryState(seconds, resolve));
   } catch (e) {
-    return false;
-  } finally {
-    clearTimeout(timer);
+    return 'active';
   }
+}
+
+async function runWatcherTick() {
+  // Calling an extension API (chrome.idle.queryState) each tick resets Chrome's service worker
+  // idle timer, keeping this background worker alive indefinitely while the user is active.
+  const idleState = await queryIdleState(IDLE_SECONDS);
+  if (idleState === 'idle' || idleState === 'locked') {
+    stopWatcher();
+    return;
+  }
+
+  // Offline: no request. The 'offline' event normally records it; if that event never reached
+  // this worker, the check (which makes no requests while offline) records it now.
+  if (!deviceOnline()) {
+    const { isOffline } = await chrome.storage.local.get('isOffline');
+    if (isOffline !== true && !activeProbePromise) fetchAllBackgroundLocations(true).catch(() => {});
+    return;
+  }
+
+  const url = WATCHER_TRACE_URLS[watcherTraceIndex % WATCHER_TRACE_URLS.length];
+  watcherTraceIndex++;
+
+  let traceText = null;
+  try {
+    const res = await fetchWithTimeout(url, {}, 2000);
+    if (res?.ok) {
+      traceText = await res.text();
+    }
+  } catch (e) {
+    traceText = null;
+  }
+
+  let traceIp = null;
+  let traceLoc = '';
+  if (traceText) {
+    const ipMatch = traceText.match(/^ip=([^\r\n]+)/m);
+    const locMatch = traceText.match(/^loc=([^\r\n]+)/m);
+    const ip = ipMatch ? ipMatch[1].trim() : '';
+    if (isValidIPv4(ip) || isValidIPv6(ip)) {
+      traceIp = ip;
+      traceLoc = locMatch && locMatch[1] ? normalizeCountryCode(locMatch[1].trim()) : '';
+    }
+  }
+
+  const stored = await chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeError']);
+
+  // A probe is started only when the trace answer itself changes (or after a failed check): the
+  // shown IP can legitimately differ from the trace (Cloudflare's country database, an IPv6 the
+  // main check cannot confirm, a fallback IP), and that must not cause a probe every tick.
+  let shouldTrigger = false;
+  let key = lastTraceKey;
+  if (traceIp) {
+    traceConsecutiveFailures = 0;
+    traceSucceededOnce = true;
+    traceFailureTriggered = false;
+    const isV6 = traceIp.includes(':');
+    const ip = isV6 ? canonicalIPv6(traceIp) : traceIp;
+    key = `${ip}|${traceLoc}`;
+    const shown = isV6 ? stored.latestV6Info : stored.latestV4Info;
+    const shownIp = shown?.ip ? (isV6 ? canonicalIPv6(shown.ip) : shown.ip) : null;
+    const shownCountry = normalizeCountryCode(shown?.countryCode);
+    const differs = !shownIp || ip !== shownIp || (!!shownCountry && !!traceLoc && shownCountry !== traceLoc);
+    shouldTrigger = stored.isOffline === true || stored.probeError === true || (differs && key !== lastTraceKey);
+  } else {
+    traceConsecutiveFailures++;
+    // A connection lost or changing: one probe for the whole failure streak (it decides between
+    // offline and ERR, with its own grace period).
+    shouldTrigger = traceSucceededOnce && !traceFailureTriggered;
+  }
+
+  // While a probe runs, the trigger is kept for the next tick instead of being dropped.
+  if (shouldTrigger && activeProbePromise) return;
+  lastTraceKey = key;
+  if (shouldTrigger) {
+    if (!traceIp) traceFailureTriggered = true;
+    fetchAllBackgroundLocations(true).catch(() => {});
+  }
+}
+
+async function watcherLoop(generation = watcherGeneration) {
+  if (!watcherRunning || generation !== watcherGeneration) return;
+  try {
+    await runWatcherTick();
+  } catch (e) {}
+  if (watcherRunning && generation === watcherGeneration) {
+    clearTimeout(watcherTimer);
+    watcherTimer = setTimeout(() => watcherLoop(generation), WATCH_INTERVAL_MS);
+    if (typeof watcherTimer === 'object' && typeof watcherTimer?.unref === 'function') watcherTimer.unref();
+  }
+}
+
+function startWatcher() {
+  if (watcherRunning) return;
+  watcherRunning = true;
+  const generation = ++watcherGeneration;
+  try { chrome.idle?.setDetectionInterval?.(IDLE_SECONDS); } catch (e) {}
+  clearTimeout(watcherTimer);
+  watcherTimer = setTimeout(() => watcherLoop(generation), 0);
+  if (typeof watcherTimer === 'object' && typeof watcherTimer?.unref === 'function') watcherTimer.unref();
+}
+
+function stopWatcher() {
+  watcherRunning = false;
+  clearTimeout(watcherTimer);
+  watcherTimer = null;
 }
 
 function fastDetectionEnabled(settings) {
-  // Off with its own switch, and also when automatic checks are off (it only triggers checks).
   return settings?.enableFastDetection !== false && settings?.enableAutoRefresh !== false;
 }
 
-async function syncFastChannel() {
-  if (typeof WebSocket === 'undefined') return;
+async function syncWatcher() {
   const { appSettings } = await chrome.storage.local.get('appSettings');
-  fastChannel.enabled = fastDetectionEnabled(appSettings);
-  if (!fastChannel.enabled) {
-    stopFastChannel();
-    fastChannel.attempt = 0;
-    saveFastBackoff(0); // switched on again later, it connects at once
-    // Switched off: the server's last view of this connection is no longer needed.
-    await chrome.storage.local.remove?.('fastChannelIp');
-    return;
+  if (fastDetectionEnabled(appSettings)) {
+    startWatcher();
+  } else {
+    stopWatcher();
   }
-  if (!fastChannel.ws && !fastChannel.retryTimer && !fastChannel.connecting) await connectFastChannel();
 }
 
-// The backoff survives the worker being stopped between alarms (session storage is memory only),
-// so an unreachable server is not asked again every time the worker wakes.
-const FAST_BACKOFF_KEY = 'fastChannelBackoff';
-async function fastBackoffWait() {
-  const saved = (await chrome.storage.session?.get(FAST_BACKOFF_KEY).catch(() => null))?.[FAST_BACKOFF_KEY];
-  if (saved && fastChannel.attempt === 0 && !fastChannel.ws) fastChannel.attempt = saved.attempt || 0;
-  return Math.max(0, (saved?.retryAt || 0) - Date.now());
-}
-function saveFastBackoff(retryAt) {
-  chrome.storage.session?.set({ [FAST_BACKOFF_KEY]: { attempt: fastChannel.attempt, retryAt } }).catch(() => {});
-}
-
-function stopFastChannel() {
-  clearTimeout(fastChannel.retryTimer);
-  fastChannel.retryTimer = null;
-  clearTimeout(fastChannel.pingTimer);
-  clearTimeout(fastChannel.pongTimer);
-  const ws = fastChannel.ws;
-  fastChannel.ws = null;
-  if (ws) { try { ws.close(1000, 'disabled'); } catch (e) {} }
-}
-
-// Test-only override URLs: encrypted, or plain only to this machine.
-const isAllowedDevChannelUrl = (url) => {
-  try {
-    const u = new URL(url);
-    return u.protocol === 'wss:' || (u.protocol === 'ws:' && ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname));
-  } catch (e) {
-    return false;
-  }
-};
-
-async function connectFastChannel() {
-  if (!fastChannel.enabled || fastChannel.ws || fastChannel.connecting || fastChannel.retryTimer) return;
-  // Offline: wait for the 'online' event (or the next alarm) instead of dialing.
-  if (!deviceOnline()) return;
-  const wait = await fastBackoffWait();
-  if (wait > 0) {
-    if (!fastChannel.retryTimer && !fastChannel.ws) fastChannel.retryTimer = setTimeout(() => { fastChannel.retryTimer = null; connectFastChannel(); }, wait);
-    return;
-  }
-  if (!fastChannel.enabled || fastChannel.ws || fastChannel.connecting || fastChannel.retryTimer) return;
-  fastChannel.connecting = true;
-  let url, reachable;
-  try {
-    // Test-only override so the end-to-end suite can point the channel at a local stand-in.
-    const { devFastChannelUrls } = await chrome.storage.local.get('devFastChannelUrls');
-    const devUrls = Array.isArray(devFastChannelUrls) ? devFastChannelUrls.filter(isAllowedDevChannelUrl) : [];
-    const urls = devUrls.length ? devUrls : FAST_CHANNEL_URLS;
-    url = urls[fastChannel.urlIndex % urls.length];
-    reachable = await fastServerReachable(url);
-  } finally {
-    fastChannel.connecting = false;
-  }
-  if (!fastChannel.enabled || fastChannel.ws || fastChannel.retryTimer) return;
-  if (!reachable) {
-    // Unreachable through this address: try the next one after the backoff, unless the device
-    // went offline meanwhile (then the 'online' event resumes the channel).
-    if (deviceOnline()) { fastChannel.urlIndex++; scheduleFastReconnect(); }
-    return;
-  }
-  let ws;
-  try { ws = new WebSocket(url); } catch (e) { fastChannel.urlIndex++; scheduleFastReconnect(); return; }
-  fastChannel.ws = ws;
-  let opened = false;
-  let openedAt = 0;
-  const isCurrent = () => fastChannel.enabled && fastChannel.ws === ws;
-  ws.onopen = () => {
-    if (!isCurrent()) { try { ws.close(1000, 'obsolete'); } catch (e) {} return; }
-    opened = true;
-    openedAt = Date.now();
-    fastChannel.attempt = 0;
-    saveFastBackoff(0);
-    // The server is reachable again: if the last check found no connection, re-check now.
-    chrome.storage.local.get(['isOffline', 'probeError']).then((res) => {
-      if (res.isOffline === true || res.probeError === true) fetchAllBackgroundLocations(true).catch(() => {});
-    }).catch(() => {});
-    let id = 0;
-    clearTimeout(fastChannel.pingTimer);
-    // Pings keep the socket (and with it this service worker) alive and detect silent drops.
-    const ping = () => {
-      if (fastChannel.ws !== ws || ws.readyState !== WebSocket.OPEN) return;
-      try {
-        ws.send(JSON.stringify({ type: 'ping', id: ++id }));
-      } catch (e) {
-        try { ws.close(4001, 'send failed'); } catch (_) {}
-        return;
+if (chrome.idle?.onStateChanged) {
+  try { chrome.idle.setDetectionInterval(IDLE_SECONDS); } catch (e) {}
+  chrome.idle.onStateChanged.addListener(async (state) => {
+    if (state === 'active') {
+      const { appSettings } = await chrome.storage.local.get('appSettings');
+      if (fastDetectionEnabled(appSettings)) {
+        startWatcher();
+        fetchAllBackgroundLocations(true).catch(() => {});
       }
-      clearTimeout(fastChannel.pongTimer);
-      fastChannel.pongTimer = setTimeout(() => { try { ws.close(4000, 'pong timeout'); } catch (e) {} }, FAST_PONG_TIMEOUT_MS);
-      fastChannel.pingTimer = setTimeout(ping, FAST_PING_MS);
-    };
-    fastChannel.pingTimer = setTimeout(ping, FAST_PING_MS);
-  };
-  ws.onmessage = (event) => {
-    if (!isCurrent()) return;
-    let msg;
-    try { msg = JSON.parse(event.data); } catch (e) { return; }
-    if (msg?.type === 'pong') clearTimeout(fastChannel.pongTimer);
-    if ((msg?.type === 'hello' || msg?.type === 'pong') && (isValidIPv4(msg.ip) || isValidIPv6(msg.ip))) {
-      onFastChannelIp(msg.ip, isCurrent).catch(() => {});
+    } else if (state === 'idle' || state === 'locked') {
+      stopWatcher();
     }
-  };
-  ws.onerror = () => {}; // onclose follows
-  ws.onclose = () => {
-    // Closed by the network rather than by us: the connection changed or dropped, so check now.
-    // A connection that had been up for a while always counts; short-lived ones at most once per
-    // 10 s, so a server that keeps dropping fresh connections cannot loop.
-    // Offline, the check makes no requests, so it always runs.
-    const dropped = opened && fastChannel.ws === ws && (!deviceOnline() ||
-      Date.now() - openedAt >= FAST_DROP_PROBE_GAP_MS || Date.now() - fastChannel.dropProbeAt >= FAST_DROP_PROBE_GAP_MS);
-    // An obsolete socket (replaced, or the channel switched off) must not touch the current
-    // socket's timers or schedule reconnects.
-    if (fastChannel.ws !== ws) return;
-    fastChannel.ws = null;
-    if (dropped) {
-      fastChannel.dropProbeAt = Date.now();
-      fetchAllBackgroundLocations(true).catch(() => {});
-    }
-    clearTimeout(fastChannel.pingTimer);
-    clearTimeout(fastChannel.pongTimer);
-    if (!opened) fastChannel.urlIndex++; // with several addresses, try the next one
-    scheduleFastReconnect();
-  };
-}
-
-function scheduleFastReconnect() {
-  if (!fastChannel.enabled || fastChannel.retryTimer) return;
-  const delay = FAST_BACKOFF_MS[Math.min(fastChannel.attempt++, FAST_BACKOFF_MS.length - 1)];
-  saveFastBackoff(Date.now() + delay);
-  fastChannel.retryTimer = setTimeout(() => { fastChannel.retryTimer = null; connectFastChannel(); }, delay);
-}
-
-// The server's view of the IP is only a trigger, never displayed: when it differs from the address
-// LeakHalo shows for that family, the network may have changed, so the regular providers verify
-// now instead of waiting for the alarm. Nothing known yet: the regular first check covers it.
-async function onFastChannelIp(rawIp, isCurrent = () => true) {
-  const ip = rawIp.includes(':') ? canonicalIPv6(rawIp) : rawIp.trim();
-  const { fastChannelIp, latestV4Info, latestV6Info } = await chrome.storage.local.get(['fastChannelIp', 'latestV4Info', 'latestV6Info']);
-  if (ip === fastChannelIp || !isCurrent()) return;
-  await chrome.storage.local.set({ fastChannelIp: ip });
-  const known = ip.includes(':') ? latestV6Info?.ip : latestV4Info?.ip;
-  if (known ? ip !== known : !!fastChannelIp) fetchAllBackgroundLocations(true).catch(() => {});
+  });
 }
 
 // The 30-second alarm exists only while automatic checks are on, so with them off the worker is
@@ -1504,18 +1509,19 @@ function ensureAlarm() {
 ensureAlarm();
 
 async function autoRefresh() {
-  // Revive the channel if the worker was restarted; the worker stays busy until both finish.
+  // Revive the watcher if the worker was restarted; the worker stays busy until both finish.
   const { appSettings } = await chrome.storage.local.get('appSettings');
   // Slightly below the alarm period, so a probe that ran just before does not skip a whole tick.
   await Promise.all([
-    syncFastChannel().catch(() => {}),
+    syncWatcher().catch(() => {}),
     appSettings?.enableAutoRefresh !== false ? fetchAllBackgroundLocations(false, PROBE_INTERVAL_MS - 5_000).catch(() => {}) : null
   ]);
 }
 
 // Every worker start already runs the setup at the bottom of this file (alarm, policies, toolbar,
-// channel); these events add only what is specific to them.
+// watcher); these events add only what is specific to them.
 chrome.runtime.onInstalled.addListener((details) => {
+  syncWatcher().catch(() => {});
   fetchAllBackgroundLocations(true).catch(() => {});
   if (details?.reason === 'install') {
     chrome.tabs.create({ url: chrome.runtime.getURL('welcome/welcome.html') }).catch(() => {});
@@ -1523,6 +1529,7 @@ chrome.runtime.onInstalled.addListener((details) => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  syncWatcher().catch(() => {});
   autoChecksEnabled().then(on => on && fetchAllBackgroundLocations(true)).catch(() => {});
 });
 
@@ -1537,6 +1544,7 @@ const IP_DATA_KEYS = ['latestV4Info', 'latestV6Info', 'routeState', 'routeDiverg
   'isOffline', 'probeError', 'v4Unverified', 'lastCheckedAt', 'lastProbeAt'];
 async function clearStoredIpData() {
   probeGeneration++; // a check still running must not write its result back
+  resetErrGrace();
   await chrome.storage.local.remove(IP_DATA_KEYS);
   await chrome.storage.session?.clear().catch(() => {});
   geoMemoryCache.clear();
@@ -1580,9 +1588,13 @@ function updateSettings(patch) {
     const autoWasOff = previous.enableAutoRefresh === false;
     if (next.enableAutoRefresh === false) {
       resetOfflineRetry();
+      resetErrGrace();
       await chrome.alarms.clear(PROBE_ALARM).catch(() => {});
     } else if (autoWasOff) {
       ensureAlarm();
+    }
+    if (changed('enableFastDetection') || changed('enableAutoRefresh')) {
+      syncWatcher().catch(() => {});
     }
     if (TOOLBAR_KEYS.some(changed)) {
       const res = await chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeError']);
@@ -1617,9 +1629,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   if (request.type === 'CHECK_NETWORK') {
-    // While LeakHalo's server connection is up it reports a changed IP within seconds (and a
-    // dropped connection triggers a check), so the open popup asks the providers less often.
-    const interval = fastChannel.ws?.readyState === 1 ? POPUP_PROBE_WITH_CHANNEL_MS : POPUP_PROBE_INTERVAL_MS;
+    // While the watcher is running it reports a changed IP within seconds, so the open popup asks
+    // the providers less often.
+    const interval = watcherRunning ? POPUP_PROBE_WITH_WATCHER_MS : POPUP_PROBE_INTERVAL_MS;
     fetchAllBackgroundLocations(request.force === true, interval).then((data) => sendResponse({ status: 'ok', data })).catch(() => sendResponse({ status: 'error' }));
     return true;
   }
@@ -1638,19 +1650,22 @@ chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline', 'probeErr
   updateToolbarDisplay(res.latestV4Info || null, res.latestV6Info || null, res.isOffline || false, res.probeError === true);
 });
 applyPrivacyShield();
-syncFastChannel().catch(() => {});
+chrome.storage.local.remove?.('fastChannelIp');
+// Removing the extension opens a one-tap "why?" page; it receives only the version and UI language.
+try {
+  const lang = chrome.i18n?.getUILanguage?.() || '';
+  chrome.runtime.setUninstallURL?.(`https://slmn-labs.github.io/leakhalo/bye.html?v=${encodeURIComponent(chrome.runtime.getManifest().version)}&l=${encodeURIComponent(lang)}`)?.catch?.(() => {});
+} catch (e) {}
+syncWatcher().catch(() => {});
 chrome.storage.onChanged?.addListener((changes, area) => {
-  if (area === 'local' && (changes.appSettings || changes.devFastChannelUrls)) syncFastChannel().catch(() => {});
+  if (area === 'local' && changes.appSettings) syncWatcher().catch(() => {});
 });
 // Network events: back online, reconnect and check right away; offline, show it right away.
 if (typeof self !== 'undefined' && typeof self.addEventListener === 'function') {
   self.addEventListener('online', () => {
-    fastChannel.attempt = 0;
-    saveFastBackoff(0);
-    clearTimeout(fastChannel.retryTimer);
-    fastChannel.retryTimer = null;
-    syncFastChannel().catch(() => {});
+    syncWatcher().catch(() => {});
     resetOfflineRetry();
+    resetErrGrace();
     autoChecksEnabled().then(async (on) => {
       if (on) return fetchAllBackgroundLocations(true);
       const res = await chrome.storage.local.get(['latestV4Info', 'latestV6Info', 'isOffline']);

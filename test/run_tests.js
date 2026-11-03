@@ -151,7 +151,7 @@ async function runAllTests() {
     assert(!/@import|@font-face/.test(welcomeCss), 'Welcome must use system fonts');
   });
   test('Onboarding adds no permissions or web-accessible resources', () => {
-    assert.deepStrictEqual(manifest.permissions, ['storage', 'alarms', 'notifications', 'privacy']);
+    assert.deepStrictEqual(manifest.permissions, ['storage', 'alarms', 'notifications', 'privacy', 'idle']);
     assert(!manifest.host_permissions);
     assert(!manifest.web_accessible_resources);
   });

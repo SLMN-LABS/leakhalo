@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>LeakHalo removed</title>
+<style>
+  :root { color-scheme: light dark; --bg: #f6f8fb; --card: #ffffff; --text: #182032; --muted: #5b6577; --line: #d9dfe8; --accent: #0a74d1; --accent-text: #ffffff; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0b141d; --card: #121e2a; --text: #e2ecf0; --muted: #9aabb8; --line: #243445; --accent: #4fb3ff; --accent-text: #06121c; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; background: var(--bg); color: var(--text); font: 16px/1.5 system-ui, "Segoe UI", Tahoma, sans-serif; }
+  main { width: 100%; max-width: 440px; background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 28px 24px; }
+  img { width: 48px; height: 48px; display: block; margin-bottom: 12px; }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  p { margin: 0 0 18px; color: var(--muted); }
+  .reasons { display: grid; gap: 8px; }
+  button { font: inherit; cursor: pointer; border-radius: 10px; }
+  .reason { text-align: start; padding: 12px 14px; background: transparent; color: var(--text); border: 1px solid var(--line); }
+  .reason:hover, .reason:focus-visible { border-color: var(--accent); outline: none; }
+  textarea { width: 100%; min-height: 84px; margin: 4px 0 10px; padding: 10px 12px; font: inherit; color: var(--text); background: transparent; border: 1px solid var(--line); border-radius: 10px; resize: vertical; }
+  .send { padding: 10px 18px; background: var(--accent); color: var(--accent-text); border: 0; font-weight: 600; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <img src="assets/icons/icon128.png" alt="">
+  <section id="ask">
+    <h1 data-t="title">Sorry to see you go</h1>
+    <p data-t="sub">One tap tells us why. Nothing else is collected.</p>
+    <div class="reasons">
+      <button class="reason" data-r="slow" data-t="slow">Too slow to notice IP or country changes</button>
+      <button class="reason" data-r="wrong" data-t="wrong">Showed ERR or the wrong country</button>
+      <button class="reason" data-r="notneeded" data-t="notneeded">I didn't need it</button>
+      <button class="reason" data-r="other_ext" data-t="other_ext">I use another extension</button>
+      <button class="reason" data-r="other" data-t="other">Something else</button>
+    </div>
+  </section>
+  <section id="more" hidden>
+    <h1 data-t="thanks">Thank you!</h1>
+    <p id="moreLabel" data-t="more">Anything to add? (optional)</p>
+    <textarea id="comment" maxlength="500" aria-labelledby="moreLabel"></textarea>
+    <button class="send" id="send" data-t="send">Send</button>
+  </section>
+  <section id="done" hidden>
+    <h1 data-t="thanks">Thank you!</h1>
+    <p data-t="bye">Your answer helps make LeakHalo better.</p>
+  </section>
+</main>
+<script>
+  // Google Form that collects the answers (formResponse URL and entry ids). Empty: nothing is sent.
+  const FORM = {
+    action: 'https://docs.google.com/forms/d/e/1FAIpQLSdlG8OnZ4orABgLVepH1-l-NzgpD5fUPvGqxe0y4rWyuVLv8g/formResponse',
+    reason: 'entry.86494502', comment: 'entry.1163705695', version: 'entry.735757276', lang: 'entry.205773903'
+  };
+  const FA = {
+    title: 'متأسفیم که می‌روی', sub: 'با یک لمس بگو چرا. هیچ چیز دیگری جمع نمی‌شود.',
+    slow: 'تغییر IP یا کشور را دیر تشخیص می‌داد', wrong: 'ERR یا کشور اشتباه نشان می‌داد',
+    notneeded: 'لازمش نداشتم', other_ext: 'از اکستنشن دیگری استفاده می‌کنم', other: 'دلیل دیگر',
+    thanks: 'ممنون!', more: 'چیزی می‌خواهی اضافه کنی؟ (اختیاری)', send: 'ارسال',
+    bye: 'جوابت به بهتر شدن LeakHalo کمک می‌کند.'
+  };
+  const params = new URLSearchParams(location.search);
+  const version = (params.get('v') || '').slice(0, 20);
+  const lang = (params.get('l') || navigator.language || '').slice(0, 10);
+  if (/^fa\b/i.test(lang)) {
+    document.documentElement.lang = 'fa';
+    document.documentElement.dir = 'rtl';
+    document.querySelectorAll('[data-t]').forEach((el) => { if (FA[el.dataset.t]) el.textContent = FA[el.dataset.t]; });
+    document.title = 'LeakHalo حذف شد';
+  }
+  const submit = (fields) => {
+    if (!FORM.action) return;
+    const body = new URLSearchParams();
+    for (const [key, value] of Object.entries(fields)) if (FORM[key]) body.append(FORM[key], value);
+    fetch(FORM.action, { method: 'POST', mode: 'no-cors', body }).catch(() => {});
+  };
+  let reason = '';
+  document.querySelectorAll('.reason').forEach((button) => button.addEventListener('click', () => {
+    reason = button.dataset.r;
+    submit({ reason, version, lang });
+    document.getElementById('ask').hidden = true;
+    document.getElementById('more').hidden = false;
+    document.getElementById('comment').focus();
+  }));
+  document.getElementById('send').addEventListener('click', () => {
+    const comment = document.getElementById('comment').value.trim();
+    // A separate answer without the reason, so each removal counts once in the reasons.
+    if (comment) submit({ comment, version, lang });
+    document.getElementById('more').hidden = true;
+    document.getElementById('done').hidden = false;
+  });
+</script>
+</body>
+</html>

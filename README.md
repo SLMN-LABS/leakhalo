@@ -93,16 +93,16 @@ flowchart TB
     IP["<b>IPv4 · independent view</b><br/>ipify → Amazon checkip"]
     V6["<b>IPv6</b><br/>ipify → icanhazip"]
     GEO["<b>Location</b><br/>ipwho.is → GeoJS → ipinfo"]
-    SRV["<b>⚡ LeakHalo server</b><br/>optional · keeps no logs"]
+    WATCH["<b>⚡ Instant detection</b><br/>Cloudflare trace every 3 s · paused when idle"]
     SW(["<b>LeakHalo service worker</b><br/>compares both IPv4 views · decides what you see"])
     UI["🏳️ Toolbar flag · 🪟 Popup · 🔔 Change alerts"]
     CF & IP & V6 & GEO -- HTTPS --> SW
-    SRV -. "IP changed?" .-> SW
+    WATCH -. "IP changed?" .-> SW
     SW --> UI
 ```
 
 - **Two vantage points for IPv4.** The edge view (Cloudflare) decides what you see. A different route is reported only when the independent view (ipify) keeps disagreeing for at least 15 seconds, and incomplete answers never flip the result.
-- **Instant detection.** A tiny WebSocket to LeakHalo’s server reports the IP the server sees; when it differs from the last one, a full check runs immediately. Without it, the 30-second checks still catch every change.
+- **Instant detection.** While you use the computer, a tiny request to Cloudflare’s trace every 3 seconds compares your IP and country with the last result; when they change, a full check runs at once, so the flag updates within seconds even with the popup closed. It pauses when the computer is idle or locked, and needs no server of LeakHalo’s own. Without it, the 30-second checks still catch every change.
 - **Robust by design.** Every request has a timeout, a watchdog ends stuck checks, and a placeholder location is filled in as soon as a location service answers.
 
 ## Privacy
@@ -117,6 +117,7 @@ LeakHalo keeps your results **only in your browser**. To learn your public IP it
 | `privacy` | Apply Chrome’s WebRTC IP-handling policy and the network prediction setting |
 | `notifications` | The optional alert when your IP changes |
 | `alarms` | Background checks about every 30 seconds |
+| `idle` | Pause instant detection while you are away or the screen is locked |
 
 **No access to the sites you visit.** LeakHalo has no host permissions: it reaches the IP and location services with standard cross-origin requests, so Chrome shows no “Read and change your data” warning.
 
@@ -129,9 +130,9 @@ No. LeakHalo does not route or encrypt your traffic. It shows what your connecti
 </details>
 
 <details>
-<summary><b>Why does it connect to a LeakHalo server?</b></summary>
+<summary><b>Does LeakHalo run a server?</b></summary>
 <br>
-For instant detection: the server reports the public IP it sees, so a change is noticed within seconds even while the popup is closed. The server keeps no logs. Turn <b>Instant change detection</b> off in Settings to rely on the 30-second checks only.
+No. Since 1.2.0 instant detection uses only Cloudflare’s public trace, every few seconds while you are active. Turn <b>Instant change detection</b> off in Settings to rely on the 30-second checks only.
 </details>
 
 <details>

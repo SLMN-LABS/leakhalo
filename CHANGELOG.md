@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.0
+
+- Instant change detection no longer needs a server: while you use the computer, LeakHalo checks Cloudflare's trace every 3 seconds and updates the flag within seconds when your IP or country changes, even with the popup closed. It also notices proxy switches, works where the old server was filtered, and pauses when the computer is idle or locked (new `idle` permission, no warning).
+- While a VPN is switching and every IP service fails for a moment, the toolbar keeps the flag instead of showing ERR; ERR appears only if the failure lasts.
+- Removing the extension opens a one-tap page asking why (only the version and browser language are sent).
+- Privacy policy updated.
+
 ## 1.1.1
 
 - Flags for Kosovo and nine more territories (French Guiana, Guadeloupe, British Indian Ocean Territory, Caribbean Netherlands, Saint Pierre and Miquelon, Svalbard, U.S. Outlying Islands, Bouvet Island, Heard Island). Territories that fly their sovereign state's flag show it in the toolbar and the popup alike.
