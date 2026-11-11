@@ -1,3 +1,6 @@
+
+> 🏛️ **Official Organization Repository:** LeakHalo is now maintained at [**SLMNLABS/leakhalo**](https://github.com/SLMNLABS/leakhalo).
+
 <div align="center">
 
 <a href="https://chromewebstore.google.com/detail/foondggjfgofibchcifainhcacedopcb"><img src="docs/media/banner.webp" alt="LeakHalo: know your IP, catch the leaks. A Chrome toolbar with a country flag and the LeakHalo popup showing the public IPv4 and IPv6 address." width="100%"></a>
